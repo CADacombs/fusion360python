@@ -18,6 +18,7 @@ Instead, get values of relevant properties from
 220417: Bug fix for when there are multiple NurbsSurfaceProperties enum values.
 220419: Modified printed output.
 220427: Combined two scripts into this one.
+220621: Bug fix in getting name of SurfaceTypes Enumerator.
 """
 
 import adsk.core as ac
@@ -38,10 +39,10 @@ def enumNameFromInteger_NotBitwise(sEnum, theInteger):
         if sAttr[:2] == '__': continue
         if sAttr == 'thisown': continue
         if eval(f"{sEnum}.{sAttr}") == theInteger:
-            return sAttr[:-11]
+            return sAttr
 
 
-def enumNamesFromInteger_Bitwise(sEnum, theInteger):
+def enumNamesFromInteger_Bitwise(sEnum, theInteger, trimFromRight):
     enum = eval(sEnum)
     sAttrs = []
     for sAttr in dir(enum):
@@ -49,7 +50,7 @@ def enumNamesFromInteger_Bitwise(sEnum, theInteger):
         if sAttr == 'thisown': continue
         iEnumValue = eval(f"{sEnum}.{sAttr}")
         if iEnumValue & theInteger:
-            sAttrs.append(sAttr[:-12])
+            sAttrs.append(sAttr[:-trimFromRight])
     return sAttrs
 
 
@@ -182,8 +183,8 @@ def getNurbsSrfInfo(ns: ac.NurbsSurface):
     # s += f"\n{propertiesU}"
     # s += f"\n{propertiesV}"
     s += "\nProperties (U x V): {} x {}".format(
-        ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesU_Per_prop)),
-        ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesV_Per_prop)))
+        ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesU_Per_prop, 12)),
+        ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesV_Per_prop, 12)))
 
     return s
 
@@ -192,7 +193,9 @@ def getSrfInfo(surface: ac.Surface):
 
     # s = "\nSurface type: {}".format(
     #     enumNameFromInteger_NotBitwise('ac.SurfaceTypes', surface.surfaceType))
-    s = f"\nSurface type: {surface.objectType[12:-7]}"
+    # [:-11] removes "SurfaceType"
+    s = "\nSurface type: {}".format(
+        enumNameFromInteger_NotBitwise('ac.SurfaceTypes', surface.surfaceType)[:-11])
 
     if surface.surfaceType == ac.SurfaceTypes.NurbsSurfaceType:
         ns = surface
