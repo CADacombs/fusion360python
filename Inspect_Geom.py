@@ -19,6 +19,9 @@ Instead, get values of relevant properties from
 220419: Modified printed output.
 220427: Combined two scripts into this one.
 220621: Bug fix in getting name of SurfaceTypes Enumerator.
+220708: Added app.log of control point locations.
+221215: Added ProceduralToNURBSConversion of NurbSurfaces.
+221216: Now checks whether ProceduralToNURBSConversion created a NurbsSurface not epsilon equal to the original.
 """
 
 import adsk.core as ac
@@ -30,7 +33,10 @@ _app = ac.Application.get()
 _ui = _app.userInterface
 
 
-def log(printMe): _app.log(str(printMe))
+def _log(*printMe):
+    try: myList = list(printMe)
+    except: myList = [printMe]
+    _app.log(" ".join(str(_) for _ in myList))
 
 
 def enumNameFromInteger_NotBitwise(sEnum, theInteger):
@@ -121,13 +127,20 @@ def getNurbsCrvInfo(nc: ac.NurbsCurve3D):
 
     if not bSuccess: return
 
+
     s  = f"\ndegree: {degree}"
     s += f"\nCP count: {len(controlPoints)}"
     s += f"\nknots: {getKnotInfo(knots)}"
     # s += f"\nisRational (per property): {nc.isRational}"
     s += f"\nisRational:  {isRational_getData}"
     s += f"\nweights: {weights if weights else None}"
+    s += f"\nisClosed: {nc.isClosed}"
     s += f"\nisPeriodic: {isPeriodic}"
+
+    s += "\nControl points:"
+
+    for i, cp in enumerate(controlPoints):
+        s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
 
     return s
 
@@ -141,7 +154,7 @@ def getCrvInfo(crv: ac.Curve3D):
     return s
 
 
-def getNurbsSrfInfo(ns: ac.NurbsSurface):
+def getNurbsSrfInfo(ns: ac.NurbsSurface, bCPs: bool=False):
     (
         bSuccess,
         degreeU,
@@ -162,14 +175,14 @@ def getNurbsSrfInfo(ns: ac.NurbsSurface):
     propertiesV_Per_prop = ns.propertiesV
 
     if propertiesU_Per_getData != propertiesU_Per_prop:
-        log(
+        _log(
             "propertiesU from NurbsSurface.getData doesn't match NurbsSurfce.propertiesU."
-            "  Bug reported to forum on 12-16-2021 still exists.")
+            "  This means that bug reported to forum on 12-16-2021 still exists.")
 
     if propertiesV_Per_getData != propertiesV_Per_prop:
-        log(
+        _log(
             "propertiesV from NurbsSurface.getData doesn't match NurbsSurfce.propertiesV."
-            "  Bug reported to forum on 12-16-2021 still exists.")
+            "  The means that bug reported to forum on 12-16-2021 still exists.")
 
     #log(rc)
 
@@ -186,6 +199,25 @@ def getNurbsSrfInfo(ns: ac.NurbsSurface):
         ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesU_Per_prop, 12)),
         ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesV_Per_prop, 12)))
 
+
+    if not bCPs:
+        return s
+
+    xs = []
+    ys = []
+    zs = []
+
+    s += "\nControl points:"
+
+    for i, cp in enumerate(cps):
+        s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+        xs.append(cp.x)
+        ys.append(cp.y)
+        zs.append(cp.z)
+
+    # for i, x in enumerate(xs):
+    #     log((i, xs.count(x)))
+
     return s
 
 
@@ -194,8 +226,6 @@ def getSrfInfo(surface: ac.Surface):
     # s = "\nSurface type: {}".format(
     #     enumNameFromInteger_NotBitwise('ac.SurfaceTypes', surface.surfaceType))
     # [:-11] removes "SurfaceType"
-    s = "\nSurface type: {}".format(
-        enumNameFromInteger_NotBitwise('ac.SurfaceTypes', surface.surfaceType)[:-11])
 
     if surface.surfaceType == ac.SurfaceTypes.NurbsSurfaceType:
         ns = surface
@@ -206,13 +236,62 @@ def getSrfInfo(surface: ac.Surface):
     return s
 
 
+def areNurbsSurfacesEquivalent(ns_A, ns_B):
+    getData_A = ns_A.getData()
+    if not getData_A[0]:
+        raise Exception("getData failed!")
+    getData_B = ns_B.getData()
+    if not getData_A[0]:
+        raise Exception("getData failed!")
+
+    for i in 1,2,3,4,6,7,8,9,10:
+        if getData_A[i] != getData_B[i]:
+            return False
+
+    # Now check all control points.
+    for j in range(getData_A[3] * getData_A[4]):
+        if not getData_A[5][j].isEqualTo(getData_B[5][j]):
+            return False
+
+    return True
+
+
 def getGeomInfo(ent):
 
     s = f"\nSelected: {ent.objectType[14:]}"
 
     if (isinstance(ent, af.BRepFace)):
-        rc = getSrfInfo(ent.geometry)
-        if rc: return s + rc
+        face = ent
+        surface = face.geometry
+
+        s += "\nSurface type: {}".format(
+            enumNameFromInteger_NotBitwise('ac.SurfaceTypes', surface.surfaceType)[:-11])
+
+        if surface.surfaceType == ac.SurfaceTypes.NurbsSurfaceType:
+            ns = surface
+
+            s_nsInfo = getNurbsSrfInfo(ns)
+            if s_nsInfo:
+                s += s_nsInfo
+            body_Converted = face.convert(0)#af.BRepConvertOptions.ProceduralToNURBSConversion)
+
+            s_fromProcedural = ""
+
+            for face_converted in body_Converted.faces:
+                ns_converted = face_converted.geometry
+                if areNurbsSurfacesEquivalent(ns, ns_converted):
+                    s += "\n\nSurface is not procedurally calculated."
+                    continue
+
+                s_nsInfo = getNurbsSrfInfo(ns_converted)
+                if s_nsInfo:
+                    s_fromProcedural += s_nsInfo
+
+            if s_fromProcedural:
+                s += "\n\nProceduralToNURBSConversion:"
+                s += s_fromProcedural
+
+        return s
     elif isinstance(ent, (af.BRepEdge, af.SketchCurve)):
         rc = getCrvInfo(ent.geometry)
         if rc: return s + rc
@@ -230,13 +309,13 @@ def main():
             return
 
         sInfo = getGeomInfo(sel.entity)
-        log(sInfo)
+        _log(sInfo)
 
 
 def run(context):
     try:
         main()
     except:
-        log(f"\nFailed:\n{traceback.format_exc()}")
+        _log(f"\nFailed:\n{traceback.format_exc()}")
     finally:
-        log("\nEnd of script.")
+        _log("\nEnd of script.")
