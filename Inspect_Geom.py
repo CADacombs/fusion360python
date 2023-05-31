@@ -12,16 +12,14 @@ Instead, get values of relevant properties from
 
 """
 211214: Added getKnotInfo.
-220319: ...
-220407: Now, repeats face selection until Esc is pressed.  Now, all printed output goes to Text Commands panel.
-220413: Modified printed output.
-220417: Bug fix for when there are multiple NurbsSurfaceProperties enum values.
-220419: Modified printed output.
+...
 220427: Combined two scripts into this one.
 220621: Bug fix in getting name of SurfaceTypes Enumerator.
 220708: Added app.log of control point locations.
 221215: Added ProceduralToNURBSConversion of NurbSurfaces.
 221216: Now checks whether ProceduralToNURBSConversion created a NurbsSurface not epsilon equal to the original.
+221217: For easier reading, removed report of CP locations.
+230530: Now also reports geometry of BRepCoEdges when a BRepEdges is selected.
 """
 
 import adsk.core as ac
@@ -92,32 +90,42 @@ def getKnotInfo(knots):
             dec_plcs += 1
             break
 
-    s += "\n   "
 
-    zipped = zip(iKsPerM, ts_Unique)
-    s_JoinUs = []
-    for idxs, t in zipped:
-        if len(idxs) == 1:
-            s_JoinUs.append(f"[{idxs[0]}]{t:.{dec_plcs}f}")#.format(t, dec_plcs, idxs[0]))
-        else:
-            s_JoinUs.append(f"[{idxs[0]},{idxs[-1]}]{t:.{dec_plcs}f}")#.format(t, dec_plcs, idxs[0], idxs[-1]))
-    s += " ".join(s_JoinUs)
+    # Unique knot parameters.
+    if False:
+        s += "\n   "
+
+        zipped = zip(iKsPerM, ts_Unique)
+        s_JoinUs = []
+        for idxs, t in zipped:
+            if len(idxs) == 1:
+                s_JoinUs.append(f"[{idxs[0]}]{t:.{dec_plcs}f}")#.format(t, dec_plcs, idxs[0]))
+            else:
+                s_JoinUs.append(f"[{idxs[0]},{idxs[-1]}]{t:.{dec_plcs}f}")#.format(t, dec_plcs, idxs[0], idxs[-1]))
+        s += " ".join(s_JoinUs)
+
+    else:
+        s += "  Range:{0:.{2}f},{1:.{2}f}".format(
+            min(ts_Unique), max(ts_Unique), dec_plcs)
 
     if abs(min(deltas_ts) - max(deltas_ts)) <= 10.0**(-dec_plcs):
         s += "  Deltas:{0:.{1}f}".format(
             deltas_ts[0], dec_plcs)
     else:
-        s += "  DeltaRange:[{0:.{2}f},{1:.{2}f}]".format(
+        s += "  DeltaMin,Max: {0:.{2}f},{1:.{2}f}".format(
             min(deltas_ts), max(deltas_ts), dec_plcs)
 
     return s
 
 
-def getNurbsCrvInfo(nc: ac.NurbsCurve3D):
+def getNurbsCrvInfo(nc, iCt_MaxCPs: int=0):
+    """
+    nc: NurbsCurve2D or NurbsCurve3D
+    """
 
     (
         bSuccess,
-        controlPoints,
+        cps,
         degree,
         knots,
         isRational_getData,
@@ -127,20 +135,32 @@ def getNurbsCrvInfo(nc: ac.NurbsCurve3D):
 
     if not bSuccess: return
 
-
     s  = f"\ndegree: {degree}"
-    s += f"\nCP count: {len(controlPoints)}"
+    s += f"  CP count: {len(cps)}"
     s += f"\nknots: {getKnotInfo(knots)}"
-    # s += f"\nisRational (per property): {nc.isRational}"
-    s += f"\nisRational:  {isRational_getData}"
-    s += f"\nweights: {weights if weights else None}"
     s += f"\nisClosed: {nc.isClosed}"
-    s += f"\nisPeriodic: {isPeriodic}"
+    s += f"  isPeriodic: {isPeriodic}"
+    # s += f"\nisRational (per property): {nc.isRational}"
+    s += f"  isRational:  {isRational_getData}"
+    s += f"  weights: {weights if weights else None}"
+
+    if iCt_MaxCPs == 0:
+        return s
 
     s += "\nControl points:"
 
-    for i, cp in enumerate(controlPoints):
-        s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+    # cps is adsk.core.Point3DVector but acts like a list.
+
+    if (iCt_MaxCPs < 0) or (len(cps.size) <= iCt_MaxCPs):
+        for i, cp in enumerate(cps):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+    else:
+        for i, cp in enumerate(list(cps)[:iCt_MaxCPs//2]):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+        s += "\n..."
+        start = len(cps)-iCt_MaxCPs//2
+        for i, cp in enumerate(list(cps)[start:], start=start):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
 
     return s
 
@@ -148,13 +168,13 @@ def getNurbsCrvInfo(nc: ac.NurbsCurve3D):
 def getCrvInfo(crv: ac.Curve3D):
     s = f"\nCurve type: {crv.objectType[12:]}"
 
-    if isinstance(crv, (ac.NurbsCurve3D)):
-        s += getNurbsCrvInfo(crv)
+    if isinstance(crv, (ac.NurbsCurve3D, ac.NurbsCurve2D)):
+        s += getNurbsCrvInfo(crv, iCt_MaxCPs=0)
 
     return s
 
 
-def getNurbsSrfInfo(ns: ac.NurbsSurface, bCPs: bool=False):
+def getNurbsSrfInfo(ns: ac.NurbsSurface, iCt_MaxCPs: int=0):
     (
         bSuccess,
         degreeU,
@@ -200,23 +220,23 @@ def getNurbsSrfInfo(ns: ac.NurbsSurface, bCPs: bool=False):
         ",".join(enumNamesFromInteger_Bitwise('ac.NurbsSurfaceProperties', propertiesV_Per_prop, 12)))
 
 
-    if not bCPs:
+    if iCt_MaxCPs == 0:
         return s
-
-    xs = []
-    ys = []
-    zs = []
 
     s += "\nControl points:"
 
-    for i, cp in enumerate(cps):
-        s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
-        xs.append(cp.x)
-        ys.append(cp.y)
-        zs.append(cp.z)
+    # cps is adsk.core.Point3DVector but acts like a list.
 
-    # for i, x in enumerate(xs):
-    #     log((i, xs.count(x)))
+    if (iCt_MaxCPs < 0) or (cps.size() <= iCt_MaxCPs):
+        for i, cp in enumerate(cps):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+    else:
+        for i, cp in enumerate(list(cps)[:iCt_MaxCPs//2]):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
+        s += "\n..."
+        start = cps.size()-iCt_MaxCPs//2
+        for i, cp in enumerate(list(cps)[start:], start=start):
+            s += f"\n  {i}: {cp.x}, {cp.y}, {cp.z}"
 
     return s
 
@@ -270,7 +290,7 @@ def getGeomInfo(ent):
         if surface.surfaceType == ac.SurfaceTypes.NurbsSurfaceType:
             ns = surface
 
-            s_nsInfo = getNurbsSrfInfo(ns)
+            s_nsInfo = getNurbsSrfInfo(ns, iCt_MaxCPs=0)
             if s_nsInfo:
                 s += s_nsInfo
             body_Converted = face.convert(0)#af.BRepConvertOptions.ProceduralToNURBSConversion)
@@ -283,7 +303,7 @@ def getGeomInfo(ent):
                     s += "\n\nSurface is not procedurally calculated."
                     continue
 
-                s_nsInfo = getNurbsSrfInfo(ns_converted)
+                s_nsInfo = getNurbsSrfInfo(ns_converted, iCt_MaxCPs=0)
                 if s_nsInfo:
                     s_fromProcedural += s_nsInfo
 
@@ -292,7 +312,15 @@ def getGeomInfo(ent):
                 s += s_fromProcedural
 
         return s
-    elif isinstance(ent, (af.BRepEdge, af.SketchCurve)):
+    elif isinstance(ent, af.BRepEdge):
+        rc = getCrvInfo(ent.geometry)
+        if rc: s += rc
+        for ic, coedge in enumerate(ent.coEdges):
+            s += f"\n\nBRepCoEdge {ic+1} of {ent.coEdges.count} of selected BRepEdge"
+            rc = getCrvInfo(coedge.geometry)
+            if rc: s += rc
+        return s
+    elif isinstance(ent, af.SketchCurve):
         rc = getCrvInfo(ent.geometry)
         if rc: return s + rc
     else:
