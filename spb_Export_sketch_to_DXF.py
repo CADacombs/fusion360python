@@ -1,21 +1,39 @@
 """
-240209-17: Created.
+This script is an alternative to 'Save as DXF' command accessed by
+right clicking on sketch.
+
+Features not found in native command:
+    1. Points are supported.
+    2. Option to export per World coordinates instead of default to transform
+    sketch coordinates to the World XY plane.
+
+Send any questions, comments, or script development service needs to @CADacombs on Autodesk's forums.
+"""
+
+"""
+240209-17: Created basic working version.
+240229-0301: Changed temporary folder path. Added dialog box for input.
+240301: Added saving of options to an .ini in same folder as this script.
+        Added option to export World coordinates vs. sketch plane transformation to World XY plane.
 
 TODO:
     WIP:
-        ...
+
     Up next:
-        Add dialog box to add options (below).
-    Add option: Export to World coordinates vs. sketch plane transformation to World XY plane.
-    Add option: Project to sketch plane.
+        Fix arc error as seen in export of 'Sketch for DXF' per Sketch coordinates.)
+        
     Add option: Skip construction curves.
+    Add option: Project to sketch plane.
     Add option: Add point at center of all circles since SketchPt.connectedEntities points are ignored.
                 Leave the latter ignored to prevent other points from exporting.
     Add option: Export each sketch to a unique layer.
 """
 
+import adsk
 import adsk.core as ac
 import adsk.fusion as af
+
+import configparser
 import os.path
 import math
 
@@ -24,8 +42,21 @@ _app = ac.Application.get()
 _ui = _app.userInterface
 # _des: af.Design = _app.activeDocument.products.itemByProductType("DesignProductType")
 
+_strCmdID = os.path.splitext(os.path.basename(__file__))[0]
+_strCmdLabel = 'Export sketch to DXF'
+
+_handlers = []
+
+class Ins:
+    """Inputs"""
+    
+    sketch = None
+    bSketchCoords = True
+    # bLoft = False
+
+
 _sFileName = "from_Fusion_sketch.dxf"
-_sPath_TanslationFolder = os.path.expanduser('~/Desktop/Translations')
+_sPath_TanslationFolder = "C:/TempShared/Translations"
 if os.path.isdir(_sPath_TanslationFolder):
     _sPath_Out = _sPath_TanslationFolder + "/" + _sFileName
 else:
@@ -46,6 +77,11 @@ def _onFail():
     _ui.messageBox(sFail)
 
 
+_s_inifile = os.path.join(os.path.dirname(os.path.realpath(__file__)), _strCmdID+".ini")
+_config = configparser.ConfigParser()
+_config['DialogOptionValues'] = {}
+_configOpts = _config['DialogOptionValues']
+
 _list_DXF_entity_lines = []
 
 
@@ -54,7 +90,7 @@ def dxf(s=""):
     _list_DXF_entity_lines.append(str(s))
 
 
-def build_DXF_code_for_entities(sketch: af.Sketch):
+def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
     """
     Will be using worldGeometry and creating a reference of the sketch's 'CPlane' with 2 lines.
     """
@@ -93,7 +129,6 @@ def build_DXF_code_for_entities(sketch: af.Sketch):
 
     new_entity_handle = generate_entity_handle()
 
-    bSketchCoords = True
     bConnectedEntityPts = False
 
 
@@ -494,17 +529,17 @@ def get_INSUNITS_value():
     return (4, 5, 6, 1, 2)[distanceUnits]
 
 
-def main():
-    while True:
-        try:
-            sel = _ui.selectEntity(
-                "Select a sketch to export",
-                filter="Sketches")
-        except:
-            break
+def main(sketch: af.Sketch, bSketchCoords: bool):
+    # while True:
+    #     try:
+    #         sel = _ui.selectEntity(
+    #             "Select a sketch to export",
+    #             filter="Sketches")
+    #     except:
+    #         break
         
-        build_DXF_code_for_entities(sel.entity)
-        break
+    #     build_DXF_code_for_entities(sel.entity)
+    #     break
         # _log(sel.entity)
         # _log(type(sel))
         # _log(type(sel.entity))
@@ -512,6 +547,13 @@ def main():
         # sInfo = getGeomInfo(sel.entity)
         # _log(sInfo)
     
+
+
+
+
+
+
+    build_DXF_code_for_entities(sketch, bSketchCoords)
 
     with open(os.path.join(os.path.dirname(__file__), "dxf_template.txt"), 'r') as fIn:
         sDXFCode = fIn.read()
@@ -525,10 +567,168 @@ def main():
             _log('"{}" was created/overwritten.'.format(_sPath_Out))
 
 
+class MyCommand_Execute_Handler(ac.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            command: ac.Command = args.firingEvent.sender
+            inputs = command.commandInputs
+         
+            Ins.sketch = inputs.itemById('sketch').selection(0).entity
+            bSketchCoords = inputs.itemById('bSketchCoords').value
+
+            _configOpts['bSketchCoords'] = str(bSketchCoords)
+
+            with open(_s_inifile, 'w') as configfile:
+                _config.write(configfile)
+
+
+            main(sketch=Ins.sketch, bSketchCoords=bSketchCoords)
+
+            # if ct_Sets_X < 1: ct_Sets_X = 1
+            # if ct_Sets_Y < 1: ct_Sets_Y = 1
+            # if ct_Crvs < 2: ct_Crvs = 2
+            # if ct_Pts < 2: ct_Pts = 2
+
+            # for iX in range(ct_Sets_X):
+            #     for iY in range(ct_Sets_Y):
+
+            #         x_start = iX * x_incr * (ct_Pts-1)
+            #         y_start = iY * y_incr * (ct_Crvs-1)
+            
+            #         sketch = createSketch(ct_Crvs, ct_Pts, x_incr, y_incr, z_maxSpan, x_start, y_start, bSketchCoords)
+            #         if sketch is None:
+            #             _log("Sketch could not be created.")
+            #             adsk.terminate()
+            #             return
+
+            #         if inputs.itemById('bLoft').value:
+            #             loft = createLoft(sketch)
+            #             if loft is None:
+            #                 _log("Loft could not be created.")
+            #                 adsk.terminate()
+            #                 return
+            
+            # Force the termination of the command.
+            adsk.terminate()
+
+        except:
+            _onFail()
+
+
+class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            eventArgs = ac.InputChangedEventArgs.cast(args)
+            inputs = eventArgs.inputs
+            cmdInput = eventArgs.input
+            _log(cmdInput.id)
+            if cmdInput.id == 'sketch':
+                Ins.sketch = inputs.itemById('sketch').selection(0).entity
+            elif cmdInput.id == 'bSketchCoords':
+                Ins.bSketchCoords = inputs.itemById('bSketchCoords').value
+                _configOpts['bSketchCoords'] = str(Ins.bSketchCoords)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+        except:
+            _onFail()
+
+
+class MyCommand_Destroy_Handler(ac.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            # when the command is done, terminate the script
+            # this will release all globals which will remove all event handlers
+            adsk.terminate()
+        except:
+            _onFail()
+
+
+class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+ 
+            cmd = ac.Command.cast(args.command)
+    
+            # Connect up to the command executed event.        
+            onExecute = MyCommand_Execute_Handler()
+            cmd.execute.add(onExecute)
+            _handlers.append(onExecute)
+
+            onDestroy = MyCommand_Destroy_Handler()
+            cmd.destroy.add(onDestroy)
+            _handlers.append(onDestroy)
+
+            onInputChanged = MyCommand_InputChanged_Handler()
+            cmd.inputChanged.add(onInputChanged)
+            _handlers.append(onInputChanged)   
+
+            try:
+                _config.read(_s_inifile)
+                Ins.bSketchCoords = (_configOpts['bSketchCoords'] == 'True')
+            except:
+                _onFail()
+                _configOpts['bSketchCoords'] = 'True'
+
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+
+
+            inputs = cmd.commandInputs
+
+            unitsMgr = _app.activeProduct.unitsManager
+
+
+            id = 'sketch'
+            selectInput = inputs.addSelectionInput(
+                id='sketch',
+                name="Sketch",
+                commandPrompt="Select sketch to export")
+            selectInput.addSelectionFilter(ac.SelectionCommandInput.Sketches)
+            selectInput.setSelectionLimits(minimum=1, maximum=1)
+
+            inputs.addBoolValueInput(
+                'bSketchCoords',
+                "Transform sketch coordinates to World XY plane",
+                True,
+                "",
+                Ins.bSketchCoords)
+
+            # id = 'bLoft'
+            # inputs.addBoolValueInput(id, Ins.names[id], True, "", bool(True))
+
+
+        except:
+            _onFail()
+
+
 def run(context):
     try:
         _log("\nStart of script.\n", "V"*40, )
-        main()
+
+        if _ui.commandDefinitions.itemById(_strCmdID):
+            _ui.commandDefinitions.itemById(_strCmdID).deleteMe()            
+        cmdDef = _ui.commandDefinitions.addButtonDefinition(_strCmdID, _strCmdLabel, '', '')
+
+        onCommandCreated = MyCommand_Created_Handler()
+        cmdDef.commandCreated.add(onCommandCreated)
+        _handlers.append(onCommandCreated)
+
+        cmdDef.execute()
+
+        adsk.autoTerminate(False) # Otherwise, dialog doesn't even display.
+
     except:
         _onFail()
     finally:
