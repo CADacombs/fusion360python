@@ -1,11 +1,16 @@
 """
 This script is an alternative to 'Save as DXF' command accessed by
-right clicking on sketch.
+right clicking on a sketch.
 
 Features not found in native command:
     1. Points are supported.
     2. Option to export per World coordinates instead of default to transform
     sketch coordinates to the World XY plane.
+    3. Option to include points with connectedEntities.
+    4. Option to include points that are not deletable.
+    5. Option to include construction curves.
+    6. Option to include linked points and curves.
+    7. Option to include reference points and curves.
 
 Send any questions, comments, or script development service needs to @CADacombs on Autodesk's forums.
 """
@@ -15,18 +20,34 @@ Send any questions, comments, or script development service needs to @CADacombs 
 240229-0301: Changed temporary folder path. Added dialog box for input.
 240301: Added saving of options to an .ini in same folder as this script.
         Added option to export World coordinates vs. sketch plane transformation to World XY plane.
+240304: Bug fix of arcs per Sketch coordinates.
+        Added option to include SketchPoints with connectedEntities. Origin point has none.
+        Added option to include SketchPoints per isDeletable. Origin point is False
+        Added option to include construction curves.
+        Added option to include linked points and curves.
+        Added option to include reference points and curves.
+
+Notes:
+    Right-click-'Save as DXF' output always includes normal of arcs and circles:
+        0
+        220
+        0
+        230
+        1
 
 TODO:
     WIP:
+        Add destination folder. Default may be Desktop but chosen one will be saved in .ini.
 
     Up next:
-        Fix arc error as seen in export of 'Sketch for DXF' per Sketch coordinates.)
-        
-    Add option: Skip construction curves.
-    Add option: Project to sketch plane.
-    Add option: Add point at center of all circles since SketchPt.connectedEntities points are ignored.
-                Leave the latter ignored to prevent other points from exporting.
-    Add option: Export each sketch to a unique layer.
+    
+    Add options:
+        Project points and curves to sketch plane.
+        Add point at center of all circles since SketchPt.connectedEntities points are ignored.
+            Leave the latter ignored to prevent other points from exporting.
+        ? Export multiple sketches to:
+            Single DXF or option for multiple?
+            Then option to export each sketch to a unique layer.
 """
 
 import adsk
@@ -38,6 +59,12 @@ import os.path
 import math
 
 
+def get_sPath_Out():
+    sPath_Desired = "C:\\TempShared\\Translations"
+    sFolder_Out = sPath_Desired if os.path.isdir(sPath_Desired) else os.path.expanduser('~\\Desktop')
+    return os.path.join(sFolder_Out, "from_Fusion_sketch.dxf")
+
+
 _app = ac.Application.get()
 _ui = _app.userInterface
 # _des: af.Design = _app.activeDocument.products.itemByProductType("DesignProductType")
@@ -47,20 +74,19 @@ _strCmdLabel = 'Export sketch to DXF'
 
 _handlers = []
 
+
+# Ins = None
 class Ins:
     """Inputs"""
     
     sketch = None
     bSketchCoords = True
-    # bLoft = False
-
-
-_sFileName = "from_Fusion_sketch.dxf"
-_sPath_TanslationFolder = "C:/TempShared/Translations"
-if os.path.isdir(_sPath_TanslationFolder):
-    _sPath_Out = _sPath_TanslationFolder + "/" + _sFileName
-else:
-    _sPath_Out = os.path.expanduser('~/Desktop') + "/" + _sFileName
+    bIncludePointsWithConnectedEntities = False
+    bIncludeNonDeletablePoints = False
+    bIncludeConstructionCurves = False
+    bIncludeLinked = False
+    bIncludeRef = False
+    sFilePath = get_sPath_Out()
 
 
 def _log(*printMe):
@@ -90,7 +116,7 @@ def dxf(s=""):
     _list_DXF_entity_lines.append(str(s))
 
 
-def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
+def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bIncludePointsWithConnectedEntities: bool, bIncludeNonDeletablePoints: bool, bIncludeConstructionCurves: bool, bIncludeLinked: bool, bIncludeRef: bool):
     """
     Will be using worldGeometry and creating a reference of the sketch's 'CPlane' with 2 lines.
     """
@@ -128,8 +154,6 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
             i += 1
 
     new_entity_handle = generate_entity_handle()
-
-    bConnectedEntityPts = False
 
 
     def are_Vector3Ds_epsilon_equal(vA: ac.Vector3D, vB=ac.Vector3D.create(0.0,0.0,1.0), epsilon=1e-9):
@@ -212,8 +236,27 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
 
     # There is (always? /) at least one sketch point, the read-only one at origin.
     for sketchPt in sketch.sketchPoints:
-        if not bConnectedEntityPts and sketchPt.connectedEntities:
+        if (
+            not bIncludePointsWithConnectedEntities and
+            sketchPt.connectedEntities
+        ):
             continue
+        
+        if (
+            not bIncludeNonDeletablePoints and
+            not sketchPt.isDeletable
+        ):
+            continue
+
+        if not bIncludeLinked and sketchPt.isLinked:
+            continue
+
+        if not bIncludeRef and sketchPt.isReference:
+            continue
+
+        sEval="sketchPt.connectedEntities"; _log(sEval+':',eval(sEval))
+        sEval="sketchPt.isDeletable"; _log(sEval+':',eval(sEval))
+
         # connectedEntities is None for the sketch's origin point and any exclusively added SketchPoints.
         # if sketchPt.connectedEntities is not None:
         #     continue
@@ -226,12 +269,21 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
         dxf(' 100')
         dxf('AcDbEntity')
         dxf(' 8')
-        if sketchPt.connectedEntities is None:
-            # Origin, center of polygons, and exclusively added SketchPoints.
-            dxf('From_Fusion_sketch')
-        else:
+        if not sketchPt.isDeletable and not sketchPt.connectedEntities:
+            # This include the origin point.
+            dxf('From_Fusion_sketch_Constr')
+        elif sketchPt.connectedEntities:
             # Center points of circles and arcs.
             dxf('From_Fusion_sketch_Pts_with_connected_entities')
+        else:
+            # Origin, center of polygons, and exclusively added SketchPoints.
+            dxf('From_Fusion_sketch')
+        # if sketchPt.connectedEntities is None:
+        #     # Origin, center of polygons, and exclusively added SketchPoints.
+        #     dxf('From_Fusion_sketch')
+        # else:
+        #     # Center points of circles and arcs.
+        #     dxf('From_Fusion_sketch_Pts_with_connected_entities')
         geom = sketchPt.geometry if bSketchCoords else sketchPt.worldGeometry
         dxf(' 100')
         dxf('AcDbPoint')
@@ -317,10 +369,14 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
         for sketchCrv in sketch.sketchCurves:
             geom = sketchCrv.geometry if bSketchCoords else sketchCrv.worldGeometry
 
-            if sketchCrv.isConstruction:
-                # _log("Skipped isConstruction==True for {}".format(type(geom)))
+            if not bIncludeConstructionCurves and sketchCrv.isConstruction:
                 continue
 
+            if not bIncludeLinked and sketchCrv.isLinked:
+                continue
+
+            if not bIncludeRef and sketchCrv.isReference:
+                continue
 
             if isinstance(geom, ac.Arc3D):
                 (returnValue, center, normal, referenceVector, radius, startAngle, endAngle) = geom.getData()
@@ -353,26 +409,26 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool):
                 dxf(' 100')
                 dxf('AcDbCircle')
 
-                if are_Vector3Ds_epsilon_equal(normal):
+                # Failed because direction of X axis of sketch also needs to be incorporated, and why bother?
+                # if are_Vector3Ds_epsilon_equal(normal):
+                #     dxf(' 10')
+                #     dxf(str(scaleForUnit(center.x)))
+                #     dxf(' 20')
+                #     dxf(str(scaleForUnit(center.y)))
+                #     dxf(' 30')
+                #     dxf(str(scaleForUnit(center.z)))
+                #     dxf(' 40')
+                #     dxf(str(scaleForUnit(radius)))
+                #     dxf(' 100')
+                #     dxf('AcDbArc')
 
-                    dxf(' 10')
-                    dxf(str(scaleForUnit(center.x)))
-                    dxf(' 20')
-                    dxf(str(scaleForUnit(center.y)))
-                    dxf(' 30')
-                    dxf(str(scaleForUnit(center.z)))
-                    dxf(' 40')
-                    dxf(str(scaleForUnit(radius)))
-                    dxf(' 100')
-                    dxf('AcDbArc')
+                #     startAngle_Adj, endAngle_Adj = calc_arc_start_and_end_angles_per_X_dir(startAngle, endAngle, sketch.xDirection)
 
-                    startAngle_Adj, endAngle_Adj = calc_arc_start_and_end_angles_per_X_dir(startAngle, endAngle, sketch.xDirection)
-
-                    dxf(' 50')
-                    dxf(str(math.degrees(startAngle_Adj))) # Always <= 0.0 and < 360.0.
-                    dxf(' 51')
-                    dxf(str(math.degrees(endAngle_Adj))) # Always <= 0.0 and < 360.0, regardless of value of '50'.
-                    continue
+                #     dxf(' 50')
+                #     dxf(str(math.degrees(startAngle_Adj))) # Always <= 0.0 and < 360.0.
+                #     dxf(' 51')
+                #     dxf(str(math.degrees(endAngle_Adj))) # Always <= 0.0 and < 360.0, regardless of value of '50'.
+                #     continue
 
 
                 xform = create_transformation_for_OCS(normal)
@@ -529,42 +585,39 @@ def get_INSUNITS_value():
     return (4, 5, 6, 1, 2)[distanceUnits]
 
 
-def main(sketch: af.Sketch, bSketchCoords: bool):
-    # while True:
-    #     try:
-    #         sel = _ui.selectEntity(
-    #             "Select a sketch to export",
-    #             filter="Sketches")
-    #     except:
-    #         break
-        
-    #     build_DXF_code_for_entities(sel.entity)
-    #     break
-        # _log(sel.entity)
-        # _log(type(sel))
-        # _log(type(sel.entity))
-
-        # sInfo = getGeomInfo(sel.entity)
-        # _log(sInfo)
+def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithConnectedEntities: bool|None, bIncludeNonDeletablePoints: bool|None, bIncludeConstructionCurves: bool|None, bIncludeLinked: bool|None, bIncludeRef: bool|None):
     
+    if sketch is None: sketch = Ins.sketch
+    if bSketchCoords is None: bSketchCoords = Ins.bSketchCoords
+    if bIncludePointsWithConnectedEntities is None: bIncludePointsWithConnectedEntities = Ins.bIncludePointsWithConnectedEntities
+    if bIncludeNonDeletablePoints is None: bIncludeNonDeletablePoints = Ins.bIncludeNonDeletablePoints
+    if bIncludeConstructionCurves is None: bIncludeConstructionCurves = Ins.bIncludeConstructionCurves
+    if bIncludeLinked is None: bIncludeLinked = Ins.bIncludeLinked
+    if bIncludeRef is None: bIncludeRef = Ins.bInclbIncludeRefudeConstructionCurves
 
 
-
-
-
-
-    build_DXF_code_for_entities(sketch, bSketchCoords)
+    build_DXF_code_for_entities(
+        sketch,
+        bSketchCoords=bSketchCoords,
+        bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
+        bIncludeNonDeletablePoints=bIncludeNonDeletablePoints,
+        bIncludeConstructionCurves=bIncludeConstructionCurves,
+        bIncludeLinked=bIncludeLinked,
+        bIncludeRef=bIncludeRef,
+        )
 
     with open(os.path.join(os.path.dirname(__file__), "dxf_template.txt"), 'r') as fIn:
         sDXFCode = fIn.read()
 
-        with open(_sPath_Out, 'w') as fOut:
+        sPath_Out = get_sPath_Out()
+
+        with open(sPath_Out, 'w') as fOut:
             fOut.write(sDXFCode.format(
                 insunits=get_INSUNITS_value(),
                 entities="\n".join(_list_DXF_entity_lines)))
             fOut.write('\n')
 
-            _log('"{}" was created/overwritten.'.format(_sPath_Out))
+            _log('"{}" was created/overwritten.'.format(sPath_Out))
 
 
 class MyCommand_Execute_Handler(ac.CommandEventHandler):
@@ -578,30 +631,28 @@ class MyCommand_Execute_Handler(ac.CommandEventHandler):
          
             Ins.sketch = inputs.itemById('sketch').selection(0).entity
             bSketchCoords = inputs.itemById('bSketchCoords').value
+            bIncludePointsWithConnectedEntities = inputs.itemById('bIncludePointsWithConnectedEntities').value
+            bIncludeNonDeletablePoints = inputs.itemById('bIncludeNonDeletablePoints').value
+            bIncludeConstructionCurves = inputs.itemById('bIncludeConstructionCurves').value
+            bIncludeLinked = inputs.itemById('bIncludeLinked').value
+            bIncludeRef = inputs.itemById('bIncludeRef').value
 
-            _configOpts['bSketchCoords'] = str(bSketchCoords)
+            # _configOpts['bSketchCoords'] = str(bSketchCoords)
 
             with open(_s_inifile, 'w') as configfile:
                 _config.write(configfile)
 
 
-            main(sketch=Ins.sketch, bSketchCoords=bSketchCoords)
+            main(
+                sketch=Ins.sketch,
+                bSketchCoords=bSketchCoords,
+                bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
+                bIncludeNonDeletablePoints=bIncludeNonDeletablePoints,
+                bIncludeConstructionCurves=bIncludeConstructionCurves,
+                bIncludeLinked=bIncludeLinked,
+                bIncludeRef=bIncludeRef,
+                )
 
-            # if ct_Sets_X < 1: ct_Sets_X = 1
-            # if ct_Sets_Y < 1: ct_Sets_Y = 1
-            # if ct_Crvs < 2: ct_Crvs = 2
-            # if ct_Pts < 2: ct_Pts = 2
-
-            # for iX in range(ct_Sets_X):
-            #     for iY in range(ct_Sets_Y):
-
-            #         x_start = iX * x_incr * (ct_Pts-1)
-            #         y_start = iY * y_incr * (ct_Crvs-1)
-            
-            #         sketch = createSketch(ct_Crvs, ct_Pts, x_incr, y_incr, z_maxSpan, x_start, y_start, bSketchCoords)
-            #         if sketch is None:
-            #             _log("Sketch could not be created.")
-            #             adsk.terminate()
             #             return
 
             #         if inputs.itemById('bLoft').value:
@@ -629,10 +680,39 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
             cmdInput = eventArgs.input
             _log(cmdInput.id)
             if cmdInput.id == 'sketch':
-                Ins.sketch = inputs.itemById('sketch').selection(0).entity
+                try:
+                    Ins.sketch = inputs.itemById('sketch').selection(0).entity
+                except:
+                    # Handles when sketch is unselected.
+                    Ins.sketch = None
             elif cmdInput.id == 'bSketchCoords':
                 Ins.bSketchCoords = inputs.itemById('bSketchCoords').value
                 _configOpts['bSketchCoords'] = str(Ins.bSketchCoords)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+            elif cmdInput.id == 'bIncludePointsWithConnectedEntities':
+                Ins.bIncludePointsWithConnectedEntities = inputs.itemById('bIncludePointsWithConnectedEntities').value
+                _configOpts['bIncludePointsWithConnectedEntities'] = str(Ins.bIncludePointsWithConnectedEntities)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+            elif cmdInput.id == 'bIncludeNonDeletablePoints':
+                Ins.bIncludeNonDeletablePoints = inputs.itemById('bIncludeNonDeletablePoints').value
+                _configOpts['bIncludeNonDeletablePoints'] = str(Ins.bIncludeNonDeletablePoints)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+            elif cmdInput.id == 'bIncludeConstructionCurves':
+                Ins.bIncludeConstructionCurves = inputs.itemById('bIncludeConstructionCurves').value
+                _configOpts['bIncludeConstructionCurves'] = str(Ins.bIncludeConstructionCurves)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+            elif cmdInput.id == 'bIncludeLinked':
+                Ins.bIncludeLinked = inputs.itemById('bIncludeLinked').value
+                _configOpts['bIncludeLinked'] = str(Ins.bIncludeLinked)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
+            elif cmdInput.id == 'bIncludeRef':
+                Ins.bIncludeRef = inputs.itemById('bIncludeRef').value
+                _configOpts['bIncludeRef'] = str(Ins.bIncludeRef)
                 with open(_s_inifile, 'w') as configfile:
                     _config.write(configfile)
         except:
@@ -676,10 +756,21 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
 
             try:
                 _config.read(_s_inifile)
+                # All are == 'True' regardless of intended default value.
                 Ins.bSketchCoords = (_configOpts['bSketchCoords'] == 'True')
+                Ins.bIncludePointsWithConnectedEntities = (_configOpts['bIncludePointsWithConnectedEntities'] == 'True')
+                Ins.bIncludeNonDeletablePoints = (_configOpts['bIncludeNonDeletablePoints'] == 'True')
+                Ins.bIncludeConstructionCurves = (_configOpts['bIncludeConstructionCurves'] == 'True')
+                Ins.bIncludeLinked = (_configOpts['bIncludeLinked'] == 'True')
+                Ins.bIncludeRef = (_configOpts['bIncludeRef'] == 'True')
             except:
-                _onFail()
-                _configOpts['bSketchCoords'] = 'True'
+                # _onFail()
+                _configOpts['bSketchCoords'] = str(Ins.bSketchCoords)
+                _configOpts['bIncludePointsWithConnectedEntities'] = str(Ins.bIncludePointsWithConnectedEntities)
+                _configOpts['bIncludeNonDeletablePoints'] = str(Ins.bIncludeNonDeletablePoints)
+                _configOpts['bIncludeConstructionCurves'] = str(Ins.bIncludeConstructionCurves)
+                _configOpts['bIncludeLinked'] = str(Ins.bIncludeLinked)
+                _configOpts['bIncludeRef'] = str(Ins.bIncludeRef)
 
                 with open(_s_inifile, 'w') as configfile:
                     _config.write(configfile)
@@ -704,6 +795,46 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
                 True,
                 "",
                 Ins.bSketchCoords)
+
+            inputs.addBoolValueInput(
+                'bIncludePointsWithConnectedEntities',
+                "Include points that have connected entities",
+                True,
+                "",
+                Ins.bIncludePointsWithConnectedEntities)
+
+            inputs.addBoolValueInput(
+                'bIncludeNonDeletablePoints',
+                "Include points that are not directly deletable",
+                True,
+                "",
+                Ins.bIncludeNonDeletablePoints)
+
+            inputs.addBoolValueInput(
+                'bIncludeConstructionCurves',
+                "Include construction curves",
+                True,
+                "",
+                Ins.bIncludeConstructionCurves)
+
+            inputs.addBoolValueInput(
+                'bIncludeLinked',
+                "Include linked points and curves",
+                True,
+                "",
+                Ins.bIncludeLinked)
+
+            inputs.addBoolValueInput(
+                'bIncludeRef',
+                "Include reference points and curves",
+                True,
+                "",
+                Ins.bIncludeRef)
+
+            inputs.addStringValueInput(
+                'sFilePath',
+                "File path",
+                Ins.sFilePath)
 
             # id = 'bLoft'
             # inputs.addBoolValueInput(id, Ins.names[id], True, "", bool(True))
