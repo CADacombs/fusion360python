@@ -40,7 +40,7 @@ TODO:
         Add destination folder. Default may be Desktop but chosen one will be saved in .ini.
 
     Up next:
-    
+
     Add options:
         Project points and curves to sketch plane.
         Add point at center of all circles since SketchPt.connectedEntities points are ignored.
@@ -57,6 +57,7 @@ import adsk.fusion as af
 import configparser
 import os.path
 import math
+from tkinter.filedialog import asksaveasfilename, asksaveasfile
 
 
 def get_sPath_Out():
@@ -715,6 +716,18 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
                 _configOpts['bIncludeRef'] = str(Ins.bIncludeRef)
                 with open(_s_inifile, 'w') as configfile:
                     _config.write(configfile)
+            elif cmdInput.id == 'buttonClick':
+                fileDlg = _ui.createFileDialog()
+                # fileDlg.isMultiSelectEnabled = True
+                fileDlg.title = 'Save DXF File Dialog'
+                fileDlg.filter = 'DXF files (*.dxf)'
+                dlgResult = fileDlg.showSave()
+                if dlgResult == ac.DialogResults.DialogOK:
+                    sEval="fileDlg.filename"; _log(sEval+':',eval(sEval))
+                    if not os.path.normpath(fileDlg.filename):
+                        _log(f"normpath for {fileDlg.filename}: False")
+                else:
+                    return             
         except:
             _onFail()
 
@@ -831,10 +844,14 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
                 "",
                 Ins.bIncludeRef)
 
-            inputs.addStringValueInput(
+            inputs.addTextBoxCommandInput(
                 'sFilePath',
                 "File path",
-                Ins.sFilePath)
+                Ins.sFilePath,
+                1,
+                True)
+            
+            inputs.addBoolValueInput('buttonClick', "SaveAs Dialog", False, '', False)
 
             # id = 'bLoft'
             # inputs.addBoolValueInput(id, Ins.names[id], True, "", bool(True))
