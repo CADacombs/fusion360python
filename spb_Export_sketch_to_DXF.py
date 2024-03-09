@@ -26,6 +26,7 @@ Send any questions, comments, or script development service needs to @CADacombs 
         Added option to include construction curves.
         Added option to include linked points and curves.
         Added option to include reference points and curves.
+240308: Added option to set DXF path. Default may be Desktop but chosen one will be saved in .ini.
 
 Notes:
     Right-click-'Save as DXF' output always includes normal of arcs and circles:
@@ -37,14 +38,11 @@ Notes:
 
 TODO:
     WIP:
-        Add destination folder. Default may be Desktop but chosen one will be saved in .ini.
-
-    Up next:
-
+        Add point at center of all circles when SketchPt.connectedEntities points are ignored.
+            Leave the latter ignored to prevent other points from exporting.
+        
     Add options:
         Project points and curves to sketch plane.
-        Add point at center of all circles since SketchPt.connectedEntities points are ignored.
-            Leave the latter ignored to prevent other points from exporting.
         ? Export multiple sketches to:
             Single DXF or option for multiple?
             Then option to export each sketch to a unique layer.
@@ -57,13 +55,6 @@ import adsk.fusion as af
 import configparser
 import os.path
 import math
-from tkinter.filedialog import asksaveasfilename, asksaveasfile
-
-
-def get_sPath_Out():
-    sPath_Desired = "C:\\TempShared\\Translations"
-    sFolder_Out = sPath_Desired if os.path.isdir(sPath_Desired) else os.path.expanduser('~\\Desktop')
-    return os.path.join(sFolder_Out, "from_Fusion_sketch.dxf")
 
 
 _app = ac.Application.get()
@@ -76,10 +67,25 @@ _strCmdLabel = 'Export sketch to DXF'
 _handlers = []
 
 
+def normalize_DXF_path(sPath_Full):
+    if os.path.normpath(sPath_Full):
+        sPath_DXFFolder, sFileName_DXF = os.path.split(sPath_Full)
+        if not os.path.isdir(sPath_DXFFolder):
+            sPath_DXFFolder = Ins.sPath_DXF_folder_Default
+    else:
+        sPath_DXFFolder = Ins.sPath_DXF_folder_Default
+        sFileName_DXF = Ins.sFileName_DXF_Default
+        # Ins.sPath_DXFFolder = os.path.expanduser('~\\Desktop')
+        # return os.path.join(sPath_Folder, Ins.sFileName_DXF_Default)
+
+    Ins.sPath_DXF_Full = os.path.join(sPath_DXFFolder, sFileName_DXF)
+    
+
 # Ins = None
 class Ins:
     """Inputs"""
     
+    # Defaults before set to values in .ini.
     sketch = None
     bSketchCoords = True
     bIncludePointsWithConnectedEntities = False
@@ -87,7 +93,10 @@ class Ins:
     bIncludeConstructionCurves = False
     bIncludeLinked = False
     bIncludeRef = False
-    sFilePath = get_sPath_Out()
+    sPath_DXF_folder_Default = os.path.expanduser('~\\Desktop')
+    sFileName_DXF_Default = "from_Fusion_sketch.dxf"
+    sPath_DXF_Full = os.path.join(
+        sPath_DXF_folder_Default, sFileName_DXF_Default)
 
 
 def _log(*printMe):
@@ -610,7 +619,7 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
     with open(os.path.join(os.path.dirname(__file__), "dxf_template.txt"), 'r') as fIn:
         sDXFCode = fIn.read()
 
-        sPath_Out = get_sPath_Out()
+        sPath_Out = Ins.sPath_DXF_Full
 
         with open(sPath_Out, 'w') as fOut:
             fOut.write(sDXFCode.format(
@@ -679,7 +688,7 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
             eventArgs = ac.InputChangedEventArgs.cast(args)
             inputs = eventArgs.inputs
             cmdInput = eventArgs.input
-            _log(cmdInput.id)
+            sEval="cmdInput.id"; _log(sEval+':',eval(sEval))
             if cmdInput.id == 'sketch':
                 try:
                     Ins.sketch = inputs.itemById('sketch').selection(0).entity
@@ -716,18 +725,36 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
                 _configOpts['bIncludeRef'] = str(Ins.bIncludeRef)
                 with open(_s_inifile, 'w') as configfile:
                     _config.write(configfile)
+            elif cmdInput.id == 'sv_FilePath':
+                sPath_DXF_Full_Input = inputs.itemById('sv_FilePath').value
+                normalize_DXF_path(sPath_DXF_Full_Input)
+                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                inputs.itemById('tb_FilePath').text = Ins.sPath_DXF_Full
+                inputs.itemById('sv_FilePath').value = Ins.sPath_DXF_Full
+                _configOpts['sPath_DXF_Full'] = str(Ins.sPath_DXF_Full)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
             elif cmdInput.id == 'buttonClick':
                 fileDlg = _ui.createFileDialog()
                 # fileDlg.isMultiSelectEnabled = True
                 fileDlg.title = 'Save DXF File Dialog'
                 fileDlg.filter = 'DXF files (*.dxf)'
+                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                fileDlg.initialDirectory = os.path.dirname(Ins.sPath_DXF_Full)
+                sEval="fileDlg.initialDirectory"; _log(sEval+':',eval(sEval))
+                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                fileDlg.initialFilename = os.path.split(Ins.sPath_DXF_Full)[1] #Ins.sPath_DXF_Full
+                sEval="fileDlg.initialFilename"; _log(sEval+':',eval(sEval))
                 dlgResult = fileDlg.showSave()
-                if dlgResult == ac.DialogResults.DialogOK:
-                    sEval="fileDlg.filename"; _log(sEval+':',eval(sEval))
-                    if not os.path.normpath(fileDlg.filename):
-                        _log(f"normpath for {fileDlg.filename}: False")
-                else:
-                    return             
+                if dlgResult != ac.DialogResults.DialogOK: return
+                
+                sEval="fileDlg.filename"; _log(sEval+':',eval(sEval))
+                normalize_DXF_path(fileDlg.filename)
+                inputs.itemById('tb_FilePath').text = Ins.sPath_DXF_Full
+                inputs.itemById('sv_FilePath').value = Ins.sPath_DXF_Full
+                _configOpts['sPath_DXF_Full'] = str(Ins.sPath_DXF_Full)
+                with open(_s_inifile, 'w') as configfile:
+                    _config.write(configfile)
         except:
             _onFail()
 
@@ -776,6 +803,8 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
                 Ins.bIncludeConstructionCurves = (_configOpts['bIncludeConstructionCurves'] == 'True')
                 Ins.bIncludeLinked = (_configOpts['bIncludeLinked'] == 'True')
                 Ins.bIncludeRef = (_configOpts['bIncludeRef'] == 'True')
+                Ins.sPath_DXF_Full = _configOpts['sPath_DXF_Full']
+                normalize_DXF_path(Ins.sPath_DXF_Full)
             except:
                 # _onFail()
                 _configOpts['bSketchCoords'] = str(Ins.bSketchCoords)
@@ -784,6 +813,7 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
                 _configOpts['bIncludeConstructionCurves'] = str(Ins.bIncludeConstructionCurves)
                 _configOpts['bIncludeLinked'] = str(Ins.bIncludeLinked)
                 _configOpts['bIncludeRef'] = str(Ins.bIncludeRef)
+                _configOpts['sPath_DXF_Full'] = Ins.sPath_DXF_Full
 
                 with open(_s_inifile, 'w') as configfile:
                     _config.write(configfile)
@@ -844,19 +874,21 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
                 "",
                 Ins.bIncludeRef)
 
-            inputs.addTextBoxCommandInput(
-                'sFilePath',
-                "File path",
-                Ins.sFilePath,
-                1,
-                True)
+            inputs.addStringValueInput(
+                'sv_FilePath',
+                "File path edit",
+                Ins.sPath_DXF_Full,
+                )
             
             inputs.addBoolValueInput('buttonClick', "SaveAs Dialog", False, '', False)
 
-            # id = 'bLoft'
-            # inputs.addBoolValueInput(id, Ins.names[id], True, "", bool(True))
-
-
+            inputs.addTextBoxCommandInput(
+                'tb_FilePath',
+                "File path that will be used",
+                Ins.sPath_DXF_Full,
+                1,
+                True)
+            
         except:
             _onFail()
 
