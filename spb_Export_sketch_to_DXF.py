@@ -27,6 +27,7 @@ Send any questions, comments, or script development service needs to @CADacombs 
         Added option to include linked points and curves.
         Added option to include reference points and curves.
 240308: Added option to set DXF path. Default may be Desktop but chosen one will be saved in .ini.
+240403: Bug fix. Renamed template file.
 
 Notes:
     Right-click-'Save as DXF' output always includes normal of arcs and circles:
@@ -152,7 +153,7 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         if cm_dlu:
             return a
         if isinstance(a, float):
-            return from_cm_coordinate(a.x)
+            return from_cm_coordinate(a)
         if isinstance(a, ac.Point3D):
             return ac.Point3D.create(from_cm_coordinate(a.x), from_cm_coordinate(a.y), from_cm_coordinate(a.z))
 
@@ -616,7 +617,7 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
         bIncludeRef=bIncludeRef,
         )
 
-    with open(os.path.join(os.path.dirname(__file__), "dxf_template.txt"), 'r') as fIn:
+    with open(os.path.join(os.path.dirname(__file__), "spb_Export_sketch_to_DXF-template.txt"), 'r') as fIn:
         sDXFCode = fIn.read()
 
         sPath_Out = Ins.sPath_DXF_Full
