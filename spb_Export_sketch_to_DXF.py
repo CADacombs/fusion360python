@@ -3,15 +3,19 @@ This script is an alternative to 'Save as DXF' command accessed by
 right clicking on a sketch.
 
 Features not found in native command:
-    1. Points are supported.
-    2. Option to export per World coordinates instead of default to transform
-    sketch coordinates to the World XY plane.
-    3. Option to include points with connectedEntities.
-    4. Option to include points that are not deletable.
-    5. Option to include construction curves.
-    6. Option to include linked points and curves.
-    7. Option to include reference points and curves.
-    8. DXF entities are on layer names described with parent component name, sketch name, and construction, etc.
+    . Multiple sketches can be exported to the same .dxf. (See limitation in next section.)
+    . Points are supported.
+    . Option to export per World coordinates instead of default to transform sketch coordinates to the World XY plane.
+    . Option to include points with connectedEntities.
+    . Option to include points that are not deletable.
+    . Option to include construction curves.
+    . Option to include linked points and curves.
+    . Option to include reference points and curves.
+    . DXF entities are on layer names described with parent component name, sketch name, and construction, etc.
+
+Limitations:
+    . Sketches from different occurrences of the same component cannot be included.
+    . Ellipses are currently exported as NURBS curves.
 
 Send any questions, comments, or script development service needs to @CADacombs on Autodesk's forums.
 """
@@ -30,6 +34,7 @@ Send any questions, comments, or script development service needs to @CADacombs 
 240308: Added option to set DXF path. Default may be Desktop but chosen one will be saved in .ini.
 240403: Bug fix. Renamed template file.
 240404: Layer names in DXF now include the sketch's parent component name and the sketch name.
+240405: Now, multiple sketches can be exported to one .dxf.
 
 Notes:
     Right-click-'Save as DXF' output always includes normal of arcs and circles:
@@ -46,9 +51,6 @@ TODO:
 
 
     Next up:
-        Export multiple sketches to:
-            Export each sketch to a layer whose name includes the parent component name and the sketch name.
-                Avoid duplicate creation of same layer names as in the case of selecting sketches from occurrences of the same components.
 
     Probably:
         Project points and curves to sketch plane. Add options to dialog.
@@ -56,6 +58,7 @@ TODO:
     Maybe:
         When SketchPt.connectedEntities points are not included for export, add an option to
             create points at center of all circles.
+        Export ellipses as ELLIPSE instead of SPLINE.
 """
 
 import adsk
@@ -69,12 +72,13 @@ import math
 
 _app = ac.Application.get()
 _ui = _app.userInterface
-# _des: af.Design = _app.activeDocument.products.itemByProductType("DesignProductType")
 
 _strCmdID = os.path.splitext(os.path.basename(__file__))[0]
 _strCmdLabel = 'Export sketch to DXF'
 
 _handlers = []
+
+_bDebug = False
 
 
 def normalize_DXF_path(sPath_Full):
@@ -91,12 +95,11 @@ def normalize_DXF_path(sPath_Full):
     Ins.sPath_DXF_Full = os.path.join(sPath_DXFFolder, sFileName_DXF)
     
 
-# Ins = None
 class Ins:
     """Inputs"""
     
-    # Defaults before set to values in .ini.
-    sketch = None
+    # Defaults before the values in .ini exist.
+    sketches = []
     bSketchCoords = True
     bIncludePointsWithConnectedEntities = False
     bIncludeNonDeletablePoints = False
@@ -137,6 +140,15 @@ def dxf(s=""):
     _list_DXF_entity_lines.append(str(s))
 
 
+def generate_entity_handle():
+    i=4096 # 0x1000
+    while True:
+        yield hex(i)[2:]
+        i += 1
+
+_new_entity_handle = generate_entity_handle()
+
+
 def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bIncludePointsWithConnectedEntities: bool, bIncludeNonDeletablePoints: bool, bIncludeConstructionCurves: bool, bIncludeLinked: bool, bIncludeRef: bool):
     """
     Will be using worldGeometry and creating a reference of the sketch's 'CPlane' with 2 lines.
@@ -168,15 +180,6 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             return from_cm_coordinate(a)
         if isinstance(a, ac.Point3D):
             return ac.Point3D.create(from_cm_coordinate(a.x), from_cm_coordinate(a.y), from_cm_coordinate(a.z))
-
-
-    def generate_entity_handle():
-        i=4096 # 0x1000
-        while True:
-            yield hex(i)[2:]
-            i += 1
-
-    new_entity_handle = generate_entity_handle()
 
 
     def are_Vector3Ds_epsilon_equal(vA: ac.Vector3D, vB=ac.Vector3D.create(0.0,0.0,1.0), epsilon=1e-9):
@@ -224,21 +227,21 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
 
         angleBetween = referenceVector.angleTo(xDirection)
         # angleTo result is always >= 0.0 and <= pi.
-        sEval="math.degrees(angleBetween)"; _log(sEval+':',eval(sEval))
+        if _bDebug: sEval="math.degrees(angleBetween)"; _log(sEval+':',eval(sEval))
 
         if abs(angleBetween) <= 1e-9:
             # Start of arc is on positive side of sketch's X axis.
-            sEval="abs(angleBetween) <= 1e-9"; _log(sEval+':',eval(sEval))
+            if _bDebug: sEval="abs(angleBetween) <= 1e-9"; _log(sEval+':',eval(sEval))
             return startAngle, endAngle
         
         if abs(angleBetween-math.pi) <= 1e-9:
             # Start of arc is on negative side of sketch's X axis.
-            sEval="abs(angleBetween-math.pi) <= 1e-9"; _log(sEval+':',eval(sEval))
+            if _bDebug: sEval="abs(angleBetween-math.pi) <= 1e-9"; _log(sEval+':',eval(sEval))
             startAngle_Out = math.pi
             endAngle_Out = (math.pi + endAngle) % (2*math.pi)
             return startAngle_Out, endAngle_Out
         
-        sEval="xDirection.crossProduct(referenceVector).angleTo(normal)"; _log(sEval+':',eval(sEval))
+        if _bDebug: sEval="xDirection.crossProduct(referenceVector).angleTo(normal)"; _log(sEval+':',eval(sEval))
         if xDirection.crossProduct(referenceVector).angleTo(normal) < math.pi/4.0:
             startAngle_Out = startAngle + angleBetween
             endAngle_Out = endAngle + angleBetween
@@ -251,8 +254,9 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             startAngle_Out %= 2*math.pi
         if (endAngle_Out < 0.0) or (endAngle_Out >= 2*math.pi):
             endAngle_Out %= 2*math.pi
-        sEval="math.degrees(startAngle_Out)"; _log(sEval+':',eval(sEval))
-        sEval="math.degrees(endAngle_Out)"; _log(sEval+':',eval(sEval))
+        if _bDebug:
+            sEval="math.degrees(startAngle_Out)"; _log(sEval+':',eval(sEval))
+            sEval="math.degrees(endAngle_Out)"; _log(sEval+':',eval(sEval))
 
         return startAngle_Out, endAngle_Out
         
@@ -289,8 +293,9 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         if not bIncludeRef and sketchPt.isReference:
             return
 
-        # sEval="sketchPt.connectedEntities"; _log(sEval+':',eval(sEval))
-        # sEval="sketchPt.isDeletable"; _log(sEval+':',eval(sEval))
+        # if _bDebug:
+            # sEval="sketchPt.connectedEntities"; _log(sEval+':',eval(sEval))
+            # sEval="sketchPt.isDeletable"; _log(sEval+':',eval(sEval))
 
         # connectedEntities is None for the sketch's origin point and any exclusively added SketchPoints.
         # if sketchPt.connectedEntities is not None:
@@ -298,7 +303,8 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         dxf(' 0')
         dxf('POINT')
         dxf(' 5')
-        dxf(next(new_entity_handle))
+        dxf(next(_new_entity_handle))
+        # Not created by Fusion's Save As DXF.
         # dxf(' 330')
         # dxf('A02')
         dxf(' 100')
@@ -336,12 +342,12 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
     def addCodeForNurbsCurve3d(nc: ac.NurbsCurve3D):
         (returnValue, controlPoints, degree, knots, isRational, weights, isPeriodic) = nc.getData()
 
-        _log()
+        if _bDebug: _log()
 
         dxf(' 0')
         dxf('SPLINE')
         dxf(' 5')
-        dxf(next(new_entity_handle))
+        dxf(next(_new_entity_handle))
         dxf(' 100')
         dxf('AcDbEntity')
         dxf(' 8')
@@ -427,22 +433,21 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             if isinstance(geom, ac.Arc3D):
                 (returnValue, center, normal, referenceVector, radius, startAngle, endAngle) = geom.getData()
 
-                _log()
+                if _bDebug: 
+                    _log()
+                    sEval="radius"; _log(sEval+':',eval(sEval))
+                    sEval="referenceVector.asArray()"; _log(sEval+':',eval(sEval))
+           
+                    sEval="sketch.xDirection.asArray()"; _log(sEval+':',eval(sEval))
+                    # negVector = ac.Vector3D.create(); negVector.subtract(sketch.xDirection)
 
-                sEval="radius"; _log(sEval+':',eval(sEval))
-                sEval="referenceVector.asArray()"; _log(sEval+':',eval(sEval))
-
-                
-                sEval="sketch.xDirection.asArray()"; _log(sEval+':',eval(sEval))
-                # negVector = ac.Vector3D.create(); negVector.subtract(sketch.xDirection)
-
-                sEval="math.degrees(startAngle)"; _log(sEval+':',eval(sEval))
-                sEval="math.degrees(endAngle)"; _log(sEval+':',eval(sEval))
+                    sEval="math.degrees(startAngle)"; _log(sEval+':',eval(sEval))
+                    sEval="math.degrees(endAngle)"; _log(sEval+':',eval(sEval))
 
                 dxf(' 0')
                 dxf('ARC')
                 dxf(' 5')
-                dxf(next(new_entity_handle))
+                dxf(next(_new_entity_handle))
                 # dxf(' 330')
                 # dxf('A02')
                 dxf(' 100')
@@ -521,7 +526,7 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 dxf(' 0')
                 dxf('CIRCLE')
                 dxf(' 5')
-                dxf(next(new_entity_handle))
+                dxf(next(_new_entity_handle))
                 # dxf('330')
                 # dxf('A02')
                 dxf(' 100')
@@ -548,8 +553,9 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                     continue
 
 
-                sEval="center.asArray()"; _log(sEval+':',eval(sEval))
-                sEval="normal.asArray()"; _log(sEval+':',eval(sEval))
+                if _bDebug:
+                    sEval="center.asArray()"; _log(sEval+':',eval(sEval))
+                    sEval="normal.asArray()"; _log(sEval+':',eval(sEval))
 
                 # geom = sketchCrv.worldGeometry
                 # (returnValue, center, normal, radius) = geom.getData()
@@ -563,10 +569,10 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 # xform.setToRotateTo(normal, zDir_Sketch)
 
                 xform = create_transformation_for_OCS(normal)
-                sEval="xform.asArray()"; _log(sEval+':',eval(sEval))
-
-                sEval="center.transformBy(xform)"; _log(sEval+':',eval(sEval))
-                sEval="center.asArray()"; _log(sEval+':',eval(sEval))
+                if _bDebug:
+                    sEval="xform.asArray()"; _log(sEval+':',eval(sEval))
+                    sEval="center.transformBy(xform)"; _log(sEval+':',eval(sEval))
+                    sEval="center.asArray()"; _log(sEval+':',eval(sEval))
 
                 dxf(' 10')
                 dxf(str(scaleForUnit(center.x)))
@@ -592,7 +598,7 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 dxf(' 0')
                 dxf('LINE')
                 dxf(' 5')
-                dxf(next(new_entity_handle))
+                dxf(next(_new_entity_handle))
                 # dxf('330')
                 # dxf('A02')
                 dxf(' 100')
@@ -637,21 +643,21 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
     return list_sLayers_Out
 
 
+def generate_layer_handle():
+    i=80 # 0x50
+    while True:
+        yield hex(i)[2:]
+        i += 1
+
+_new_lay_handle = generate_layer_handle()
+
 def build_DXF_code_for_layers(sLays):
-
-    def generate_layer_handle():
-        i=80 # 0x50
-        while True:
-            yield hex(i)[2:]
-            i += 1
-
-    new_lay_handle = generate_layer_handle()
 
     for sLay in sLays:
         _list_DXF_Layers.append(" 0")
         _list_DXF_Layers.append("LAYER")
         _list_DXF_Layers.append(" 5")
-        _list_DXF_Layers.append(next(new_lay_handle))
+        _list_DXF_Layers.append(next(_new_lay_handle))
         _list_DXF_Layers.append(" 100")
         _list_DXF_Layers.append("AcDbSymbolTableRecord")
         _list_DXF_Layers.append(" 100")
@@ -671,9 +677,9 @@ def get_INSUNITS_value():
     return (4, 5, 6, 1, 2)[distanceUnits]
 
 
-def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithConnectedEntities: bool|None, bIncludeNonDeletablePoints: bool|None, bIncludeConstructionCurves: bool|None, bIncludeLinked: bool|None, bIncludeRef: bool|None):
+def main(sketches: list[af.Sketch]|None, bSketchCoords: bool|None, bIncludePointsWithConnectedEntities: bool|None, bIncludeNonDeletablePoints: bool|None, bIncludeConstructionCurves: bool|None, bIncludeLinked: bool|None, bIncludeRef: bool|None):
     
-    if sketch is None: sketch = Ins.sketch
+    if sketches is None: sketches = Ins.sketches
     if bSketchCoords is None: bSketchCoords = Ins.bSketchCoords
     if bIncludePointsWithConnectedEntities is None: bIncludePointsWithConnectedEntities = Ins.bIncludePointsWithConnectedEntities
     if bIncludeNonDeletablePoints is None: bIncludeNonDeletablePoints = Ins.bIncludeNonDeletablePoints
@@ -681,19 +687,25 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
     if bIncludeLinked is None: bIncludeLinked = Ins.bIncludeLinked
     if bIncludeRef is None: bIncludeRef = Ins.bInclbIncludeRefudeConstructionCurves
 
-    sLays_to_add = build_DXF_code_for_entities(
-        sketch,
-        bSketchCoords=bSketchCoords,
-        bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
-        bIncludeNonDeletablePoints=bIncludeNonDeletablePoints,
-        bIncludeConstructionCurves=bIncludeConstructionCurves,
-        bIncludeLinked=bIncludeLinked,
-        bIncludeRef=bIncludeRef,
-        )
-    
-    if not sLays_to_add: return
+    sLays_toBuild = []
 
-    build_DXF_code_for_layers(sLays_to_add)
+    for sketch in sketches:
+
+        sLays_toAdd = build_DXF_code_for_entities(
+            sketch,
+            bSketchCoords=bSketchCoords,
+            bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
+            bIncludeNonDeletablePoints=bIncludeNonDeletablePoints,
+            bIncludeConstructionCurves=bIncludeConstructionCurves,
+            bIncludeLinked=bIncludeLinked,
+            bIncludeRef=bIncludeRef,
+            )
+        
+        if not sLays_toAdd: return
+
+        sLays_toBuild.extend([_ for _ in sLays_toAdd if _ not in sLays_toBuild])
+
+    build_DXF_code_for_layers(sLays_toBuild)
 
 
     with open(os.path.join(os.path.dirname(__file__), "spb_Export_sketch_to_DXF-template.txt"), 'r') as fIn:
@@ -710,6 +722,8 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
             fOut.write('\n')
 
             _log('"{}" was created/overwritten.'.format(sPath_Out))
+            
+        _log("^"*40, "\nEnd of script.")
 
 
 class MyCommand_Execute_Handler(ac.CommandEventHandler):
@@ -721,7 +735,8 @@ class MyCommand_Execute_Handler(ac.CommandEventHandler):
             command: ac.Command = args.firingEvent.sender
             inputs = command.commandInputs
          
-            Ins.sketch = inputs.itemById('sketch').selection(0).entity
+            if _bDebug: _log(inputs.itemById('sketches').selectionCount)
+            #Ins.sketches = [inputs.itemById('sketches').selection(_).entity for _ in range(inputs.itemById('sketches').selectionCount)]
             bSketchCoords = inputs.itemById('bSketchCoords').value
             bIncludePointsWithConnectedEntities = inputs.itemById('bIncludePointsWithConnectedEntities').value
             bIncludeNonDeletablePoints = inputs.itemById('bIncludeNonDeletablePoints').value
@@ -731,12 +746,15 @@ class MyCommand_Execute_Handler(ac.CommandEventHandler):
 
             # _configOpts['bSketchCoords'] = str(bSketchCoords)
 
+
+            if _bDebug: _log(Ins.sketches)
+
             with open(_s_inifile, 'w') as configfile:
                 _config.write(configfile)
 
 
             main(
-                sketch=Ins.sketch,
+                sketches=Ins.sketches,
                 bSketchCoords=bSketchCoords,
                 bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
                 bIncludeNonDeletablePoints=bIncludeNonDeletablePoints,
@@ -744,15 +762,6 @@ class MyCommand_Execute_Handler(ac.CommandEventHandler):
                 bIncludeLinked=bIncludeLinked,
                 bIncludeRef=bIncludeRef,
                 )
-
-            #             return
-
-            #         if inputs.itemById('bLoft').value:
-            #             loft = createLoft(sketch)
-            #             if loft is None:
-            #                 _log("Loft could not be created.")
-            #                 adsk.terminate()
-            #                 return
             
             # Force the termination of the command.
             adsk.terminate()
@@ -770,13 +779,15 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
             eventArgs = ac.InputChangedEventArgs.cast(args)
             inputs = eventArgs.inputs
             cmdInput = eventArgs.input
-            sEval="cmdInput.id"; _log(sEval+':',eval(sEval))
-            if cmdInput.id == 'sketch':
-                try:
-                    Ins.sketch = inputs.itemById('sketch').selection(0).entity
-                except:
-                    # Handles when sketch is unselected.
-                    Ins.sketch = None
+            if _bDebug: sEval="cmdInput.id"; _log(sEval+':',eval(sEval))
+            if cmdInput.id == 'sketches':
+                Ins.sketches = [inputs.itemById('sketches').selection(_).entity for _ in range(inputs.itemById('sketches').selectionCount)]
+                #_log(len(Ins.sketches))
+                # try:
+                #     Ins.sketches = inputs.itemById('sketches').selection(0).entity
+                # except:
+                #     # Handles when sketches is unselected.
+                #     Ins.sketches = None
             elif cmdInput.id == 'bSketchCoords':
                 Ins.bSketchCoords = inputs.itemById('bSketchCoords').value
                 _configOpts['bSketchCoords'] = str(Ins.bSketchCoords)
@@ -810,7 +821,7 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
             elif cmdInput.id == 'sv_FilePath':
                 sPath_DXF_Full_Input = inputs.itemById('sv_FilePath').value
                 normalize_DXF_path(sPath_DXF_Full_Input)
-                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
                 inputs.itemById('tb_FilePath').text = Ins.sPath_DXF_Full
                 inputs.itemById('sv_FilePath').value = Ins.sPath_DXF_Full
                 _configOpts['sPath_DXF_Full'] = str(Ins.sPath_DXF_Full)
@@ -821,16 +832,16 @@ class MyCommand_InputChanged_Handler(ac.InputChangedEventHandler):
                 # fileDlg.isMultiSelectEnabled = True
                 fileDlg.title = 'Save DXF File Dialog'
                 fileDlg.filter = 'DXF files (*.dxf)'
-                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
                 fileDlg.initialDirectory = os.path.dirname(Ins.sPath_DXF_Full)
-                sEval="fileDlg.initialDirectory"; _log(sEval+':',eval(sEval))
-                sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="fileDlg.initialDirectory"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="Ins.sPath_DXF_Full"; _log(sEval+':',eval(sEval))
                 fileDlg.initialFilename = os.path.split(Ins.sPath_DXF_Full)[1] #Ins.sPath_DXF_Full
-                sEval="fileDlg.initialFilename"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="fileDlg.initialFilename"; _log(sEval+':',eval(sEval))
                 dlgResult = fileDlg.showSave()
                 if dlgResult != ac.DialogResults.DialogOK: return
                 
-                sEval="fileDlg.filename"; _log(sEval+':',eval(sEval))
+                if _bDebug: sEval="fileDlg.filename"; _log(sEval+':',eval(sEval))
                 normalize_DXF_path(fileDlg.filename)
                 inputs.itemById('tb_FilePath').text = Ins.sPath_DXF_Full
                 inputs.itemById('sv_FilePath').value = Ins.sPath_DXF_Full
@@ -906,13 +917,13 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
             unitsMgr = _app.activeProduct.unitsManager
 
 
-            id = 'sketch'
+            id = 'sketches'
             selectInput = inputs.addSelectionInput(
-                id='sketch',
-                name="Sketch",
-                commandPrompt="Select sketch to export")
+                id='sketches',
+                name="Sketches",
+                commandPrompt="Select sketches to export")
             selectInput.addSelectionFilter(ac.SelectionCommandInput.Sketches)
-            selectInput.setSelectionLimits(minimum=1, maximum=1)
+            selectInput.setSelectionLimits(minimum=1, maximum=0)
 
             inputs.addBoolValueInput(
                 'bSketchCoords',
@@ -993,5 +1004,4 @@ def run(context):
 
     except:
         _onFail()
-    finally:
         _log("^"*40, "\nEnd of script.")
