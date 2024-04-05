@@ -11,6 +11,7 @@ Features not found in native command:
     5. Option to include construction curves.
     6. Option to include linked points and curves.
     7. Option to include reference points and curves.
+    8. DXF entities are on layer names described with parent component name, sketch name, and construction, etc.
 
 Send any questions, comments, or script development service needs to @CADacombs on Autodesk's forums.
 """
@@ -28,25 +29,33 @@ Send any questions, comments, or script development service needs to @CADacombs 
         Added option to include reference points and curves.
 240308: Added option to set DXF path. Default may be Desktop but chosen one will be saved in .ini.
 240403: Bug fix. Renamed template file.
+240404: Layer names in DXF now include the sketch's parent component name and the sketch name.
 
 Notes:
     Right-click-'Save as DXF' output always includes normal of arcs and circles:
+        210
         0
         220
         0
         230
         1
+    Points at the center of rectangles and polygons are not  Adding an option for points with geometric constraints
 
 TODO:
     WIP:
-        Add point at center of all circles when SketchPt.connectedEntities points are ignored.
-            Leave the latter ignored to prevent other points from exporting.
-        
-    Add options:
-        Project points and curves to sketch plane.
-        ? Export multiple sketches to:
-            Single DXF or option for multiple?
-            Then option to export each sketch to a unique layer.
+
+
+    Next up:
+        Export multiple sketches to:
+            Export each sketch to a layer whose name includes the parent component name and the sketch name.
+                Avoid duplicate creation of same layer names as in the case of selecting sketches from occurrences of the same components.
+
+    Probably:
+        Project points and curves to sketch plane. Add options to dialog.
+
+    Maybe:
+        When SketchPt.connectedEntities points are not included for export, add an option to
+            create points at center of all circles.
 """
 
 import adsk
@@ -120,6 +129,7 @@ _config['DialogOptionValues'] = {}
 _configOpts = _config['DialogOptionValues']
 
 _list_DXF_entity_lines = []
+_list_DXF_Layers = []
 
 
 def dxf(s=""):
@@ -135,6 +145,7 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
     _unitsMgr = _app.activeProduct.unitsManager
     cm_dlu = _unitsMgr.distanceDisplayUnits == af.DistanceUnits.CentimeterDistanceUnits
 
+
     def from_cm_coordinate(x):
         if cm_dlu:
             return x
@@ -143,6 +154,7 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             inputUnits='cm',
             outputUnits=_unitsMgr.defaultLengthUnits)
     
+
     def scaleForUnit(a):
         """
         Scale value to defaultLengthUnits.
@@ -245,32 +257,44 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         return startAngle_Out, endAngle_Out
         
 
-    # There is (always? /) at least one sketch point, the read-only one at origin.
-    for sketchPt in sketch.sketchPoints:
+    sLayBase = f"{sketch.parentComponent.name}${sketch.name}"
+    sLays = []
+    sLay_Normal = f"fromFusion${sLayBase}"; sLays.append(sLay_Normal)
+    sLay_Constr = f"fromFusion${sLayBase}$Constr"; sLays.append(sLay_Constr)
+    sLay_SkPts_Connected = f"fromFusion${sLayBase}$Pts_with_connected_entities"; sLays.append(sLay_SkPts_Connected)
+
+    dict_sLay_usage = {
+        sLay_Normal: 0,
+        sLay_Constr: 0,
+        sLay_SkPts_Connected: 0,
+    }
+
+    def addCodeForSketchPoint(sketchPt: af.SketchPoint):
+
         if (
             not bIncludePointsWithConnectedEntities and
             sketchPt.connectedEntities
         ):
-            continue
+            return
         
         if (
             not bIncludeNonDeletablePoints and
             not sketchPt.isDeletable
         ):
-            continue
+            return
 
         if not bIncludeLinked and sketchPt.isLinked:
-            continue
+            return
 
         if not bIncludeRef and sketchPt.isReference:
-            continue
+            return
 
-        sEval="sketchPt.connectedEntities"; _log(sEval+':',eval(sEval))
-        sEval="sketchPt.isDeletable"; _log(sEval+':',eval(sEval))
+        # sEval="sketchPt.connectedEntities"; _log(sEval+':',eval(sEval))
+        # sEval="sketchPt.isDeletable"; _log(sEval+':',eval(sEval))
 
         # connectedEntities is None for the sketch's origin point and any exclusively added SketchPoints.
         # if sketchPt.connectedEntities is not None:
-        #     continue
+        #     return
         dxf(' 0')
         dxf('POINT')
         dxf(' 5')
@@ -282,13 +306,16 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         dxf(' 8')
         if not sketchPt.isDeletable and not sketchPt.connectedEntities:
             # This include the origin point.
-            dxf('From_Fusion_sketch_Constr')
+            dxf(sLay_Constr)
+            dict_sLay_usage[sLay_Constr] += 1
         elif sketchPt.connectedEntities:
             # Center points of circles and arcs.
-            dxf('From_Fusion_sketch_Pts_with_connected_entities')
+            dxf(sLay_SkPts_Connected)
+            dict_sLay_usage[sLay_SkPts_Connected] += 1
         else:
             # Origin, center of polygons, and exclusively added SketchPoints.
-            dxf('From_Fusion_sketch')
+            dxf(sLay_Normal)
+            dict_sLay_usage[sLay_Normal] += 1
         # if sketchPt.connectedEntities is None:
         #     # Origin, center of polygons, and exclusively added SketchPoints.
         #     dxf('From_Fusion_sketch')
@@ -319,9 +346,11 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
         dxf('AcDbEntity')
         dxf(' 8')
         if sketchCrv.isConstruction:
-            dxf('From_Fusion_sketch_Constr')
+            dxf(sLay_Constr)
+            dict_sLay_usage[sLay_Constr] += 1
         else:
-            dxf('From_Fusion_sketch')
+            dxf(sLay_Normal)
+            dict_sLay_usage[sLay_Normal] += 1
         dxf(' 100')
         dxf('AcDbSpline')
 
@@ -376,6 +405,12 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             dxf(cp.z)
 
 
+
+    # There is always(?) at least one sketch point in each sketch - the read-only one at origin.
+    for sketchPt in sketch.sketchPoints:
+        addCodeForSketchPoint(sketchPt)
+
+
     if sketch.sketchCurves:
         for sketchCrv in sketch.sketchCurves:
             geom = sketchCrv.geometry if bSketchCoords else sketchCrv.worldGeometry
@@ -414,9 +449,11 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 dxf('AcDbEntity')
                 dxf(' 8')
                 if sketchCrv.isConstruction:
-                    dxf('From_Fusion_sketch_Constr')
+                    dxf(sLay_Constr)
+                    dict_sLay_usage[sLay_Constr] += 1
                 else:
-                    dxf('From_Fusion_sketch')
+                    dxf(sLay_Normal)
+                    dict_sLay_usage[sLay_Normal] += 1
                 dxf(' 100')
                 dxf('AcDbCircle')
 
@@ -491,9 +528,11 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 dxf('AcDbEntity')
                 dxf(' 8')
                 if sketchCrv.isConstruction:
-                    dxf('From_Fusion_sketch_Constr')
+                    dxf(sLay_Constr)
+                    dict_sLay_usage[sLay_Constr] += 1
                 else:
-                    dxf('From_Fusion_sketch')
+                    dxf(sLay_Normal)
+                    dict_sLay_usage[sLay_Normal] += 1
                 dxf(' 100')
                 dxf('AcDbCircle')
 
@@ -560,9 +599,11 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
                 dxf('AcDbEntity')
                 dxf(' 8')
                 if sketchCrv.isConstruction:
-                    dxf('From_Fusion_sketch_Constr')
+                    dxf(sLay_Constr)
+                    dict_sLay_usage[sLay_Constr] += 1
                 else:
-                    dxf('From_Fusion_sketch')
+                    dxf(sLay_Normal)
+                    dict_sLay_usage[sLay_Normal] += 1
                 dxf(' 100')
                 dxf('AcDbLine')
                 dxf(' 10')
@@ -591,6 +632,40 @@ def build_DXF_code_for_entities(sketch: af.Sketch, bSketchCoords: bool, bInclude
             _log(f"Geometry type, {geom}, not supported.")
 
 
+    list_sLayers_Out = [_ for _ in sLays if dict_sLay_usage[_] > 0]
+
+    return list_sLayers_Out
+
+
+def build_DXF_code_for_layers(sLays):
+
+    def generate_layer_handle():
+        i=80 # 0x50
+        while True:
+            yield hex(i)[2:]
+            i += 1
+
+    new_lay_handle = generate_layer_handle()
+
+    for sLay in sLays:
+        _list_DXF_Layers.append(" 0")
+        _list_DXF_Layers.append("LAYER")
+        _list_DXF_Layers.append(" 5")
+        _list_DXF_Layers.append(next(new_lay_handle))
+        _list_DXF_Layers.append(" 100")
+        _list_DXF_Layers.append("AcDbSymbolTableRecord")
+        _list_DXF_Layers.append(" 100")
+        _list_DXF_Layers.append("AcDbLayerTableRecord")
+        _list_DXF_Layers.append(" 2")
+        _list_DXF_Layers.append(sLay)
+        _list_DXF_Layers.append(" 70")
+        _list_DXF_Layers.append("0")
+        _list_DXF_Layers.append(" 62")
+        _list_DXF_Layers.append("7")
+        _list_DXF_Layers.append(" 6")
+        _list_DXF_Layers.append("CONTINUOUS")
+
+
 def get_INSUNITS_value():
     distanceUnits = _app.activeProduct.unitsManager.distanceDisplayUnits
     return (4, 5, 6, 1, 2)[distanceUnits]
@@ -606,8 +681,7 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
     if bIncludeLinked is None: bIncludeLinked = Ins.bIncludeLinked
     if bIncludeRef is None: bIncludeRef = Ins.bInclbIncludeRefudeConstructionCurves
 
-
-    build_DXF_code_for_entities(
+    sLays_to_add = build_DXF_code_for_entities(
         sketch,
         bSketchCoords=bSketchCoords,
         bIncludePointsWithConnectedEntities=bIncludePointsWithConnectedEntities,
@@ -616,6 +690,11 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
         bIncludeLinked=bIncludeLinked,
         bIncludeRef=bIncludeRef,
         )
+    
+    if not sLays_to_add: return
+
+    build_DXF_code_for_layers(sLays_to_add)
+
 
     with open(os.path.join(os.path.dirname(__file__), "spb_Export_sketch_to_DXF-template.txt"), 'r') as fIn:
         sDXFCode = fIn.read()
@@ -625,7 +704,9 @@ def main(sketch: af.Sketch|None, bSketchCoords: bool|None, bIncludePointsWithCon
         with open(sPath_Out, 'w') as fOut:
             fOut.write(sDXFCode.format(
                 insunits=get_INSUNITS_value(),
-                entities="\n".join(_list_DXF_entity_lines)))
+                layers="\n".join(_list_DXF_Layers),
+                entities="\n".join(_list_DXF_entity_lines),
+                ))
             fOut.write('\n')
 
             _log('"{}" was created/overwritten.'.format(sPath_Out))
@@ -782,7 +863,7 @@ class MyCommand_Created_Handler(ac.CommandCreatedEventHandler):
  
             cmd = ac.Command.cast(args.command)
     
-            # Connect up to the command executed event.        
+            # Connect up to the command executed event.
             onExecute = MyCommand_Execute_Handler()
             cmd.execute.add(onExecute)
             _handlers.append(onExecute)

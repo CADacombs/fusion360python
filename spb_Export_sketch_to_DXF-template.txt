@@ -1,5 +1,5 @@
 999
-dxf_template.txt last modified on 240403 (YYMMDD)
+dxf_template.txt last modified on 240404 (YYMMDD)
 0
 SECTION
 2
@@ -76,54 +76,7 @@ LAYER
 AcDbSymbolTable
 70
 2
-0
-LAYER
- 5
-50
- 100
-AcDbSymbolTableRecord
- 100
-AcDbLayerTableRecord
- 2
-From_Fusion_sketch
- 70
-0
- 62
-7
- 6
-CONTINUOUS
- 0
-LAYER
- 5
-51
- 100
-AcDbSymbolTableRecord
- 100
-AcDbLayerTableRecord
- 2
-From_Fusion_sketch_Constr
- 70
-0
- 62
-7
- 6
-CONTINUOUS
- 0
-LAYER
- 5
-52
- 100
-AcDbSymbolTableRecord
- 100
-AcDbLayerTableRecord
- 2
-From_Fusion_sketch_Pts_with_connected_entities
- 70
-0
- 62
-7
- 6
-CONTINUOUS
+{layers}
  0
 ENDTAB
 0
