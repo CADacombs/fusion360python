@@ -5,7 +5,7 @@ https://forums.autodesk.com/t5/fusion-api-and-scripts-forum/how-to-reliably-dete
 Developed with assistance from Autodesk Assistant (AI).
 
 260519: First released version.
-260521: Added support for contiguous co-surface faces. Improved debug output and graphics for face indices.
+260521: Added support for contiguous co-surface faces. Improved debug output and added graphics for face indices.
 """
 
 import adsk
