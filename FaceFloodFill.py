@@ -5,6 +5,7 @@ https://forums.autodesk.com/t5/fusion-api-and-scripts-forum/how-to-reliably-dete
 Developed with assistance from Autodesk Assistant (AI).
 
 260519: First released version.
+260521: Added support for co-surfaces. Improved debug output and graphics for face indices.
 """
 
 import adsk
@@ -134,11 +135,76 @@ def is_curved_face(face):
     return ok and (abs(max_curv) > 1e-10 or abs(min_curv) > 1e-10)
 
 
+def _curv_ratio(c1, c2):
+    """Relative curvature difference. Returns 0.0 when both are near-zero (co-planar)."""
+    denom = max(abs(c1), abs(c2))
+    if denom < 1e-10:
+        return 0.0
+    return abs(c1 - c2) / denom
+
+
+def _is_g2_edge(edge, f1, f2, tangent_tol_cos):
+    """
+    True if f1 and f2 are G2-continuous across edge (co-surface).
+    Tests at 3 points: quarter, midpoint, three-quarter.
+    G2 requires:
+      1. Normal directions within tangent_tol (G1 already confirmed by caller)
+      2. Both principal curvature ratios <= 0.02 at all 3 sample points
+      3. Max-curvature tangent directions within tangent_tol
+    """
+    ev = edge.evaluator
+    _, t0, t1 = ev.getParameterExtents()
+    ST = ac.SurfaceTypes
+
+    for t in [t0*0.75 + t1*0.25, (t0 + t1)*0.5, t0*0.25 + t1*0.75]:
+        _, pt = ev.getPointAtParameter(t)
+
+        ok1, n1 = f1.evaluator.getNormalAtPoint(pt)
+        ok2, n2 = f2.evaluator.getNormalAtPoint(pt)
+        if not ok1 or not ok2:
+            return False
+
+        # Surface type matching: NurbsSurface is wildcard
+        st1 = f1.geometry.surfaceType
+        st2 = f2.geometry.surfaceType
+        nurbs = ST.NurbsSurfaceType
+        if st1 != st2 and st1 != nurbs and st2 != nurbs:
+            return False
+
+        # Get parametric coords for curvature evaluation
+        ok1p, param1 = f1.evaluator.getParameterAtPoint(pt)
+        ok2p, param2 = f2.evaluator.getParameterAtPoint(pt)
+        if not ok1p or not ok2p:
+            return False
+
+        ok1c, tan1, maxC1, minC1 = f1.evaluator.getCurvature(param1)
+        ok2c, tan2, maxC2, minC2 = f2.evaluator.getCurvature(param2)
+        if not ok1c or not ok2c:
+            return False
+
+        # Curvature magnitude ratio test
+        if _curv_ratio(maxC1, maxC2) > 0.02:
+            return False
+        if _curv_ratio(minC1, minC2) > 0.02:
+            return False
+
+        # Max-curvature direction test (only meaningful when curvature is significant)
+        if abs(maxC1) > 1e-10 and abs(maxC2) > 1e-10:
+            dir_dot = abs(tan1.x*tan2.x + tan1.y*tan2.y + tan1.z*tan2.z)
+            dir_dot = max(-1.0, min(1.0, dir_dot))
+            if dir_dot < tangent_tol_cos:
+                return False
+
+    return True
+
+
 def build_edge_sets(body, tangent_tol_cos):
     """
     Build three disjoint sets of edge tokens: concave, convex, tangent.
-    Starts from body.concaveEdges / body.convexEdges, then promotes
-    any edge whose face normals are within tangent_tol_cos to the tangent set.
+    tangent_tokens includes G1-tangent edges AND G2-continuous (co-surface) edges.
+    Starts from body.concaveEdges / body.convexEdges, then:
+      1. Promotes edges within tangent_tol to tangent_tokens (G1)
+      2. Promotes remaining concave/convex edges that are G2-continuous to tangent_tokens
     Raises if the three sets do not account for all edges.
     """
     concave_tokens = {e.entityToken for e in body.concaveEdges}
@@ -152,9 +218,14 @@ def build_edge_sets(body, tangent_tol_cos):
     all_edges      = list(body.edges)
     total          = len(all_edges)
 
+    # Build an edge -> faces lookup once
+    edge_faces = {}
+    for edge in all_edges:
+        edge_faces[edge.entityToken] = list(edge.faces)
+
     for edge in all_edges:
         tok   = edge.entityToken
-        faces = list(edge.faces)
+        faces = edge_faces[tok]
         if len(faces) < 2:
             continue
         f1, f2 = faces[0], faces[1]
@@ -167,16 +238,31 @@ def build_edge_sets(body, tangent_tol_cos):
             continue
         n_dot = n1.x*n2.x + n1.y*n2.y + n1.z*n2.z
         if abs(n_dot) >= tangent_tol_cos:
+            # G1 tangent
             tangent_tokens.add(tok)
             concave_tokens.discard(tok)
             convex_tokens.discard(tok)
+
 
     boundary  = sum(1 for e in all_edges if len(list(e.faces)) < 2)
     accounted = len(concave_tokens) + len(convex_tokens) + len(tangent_tokens)
     if accounted + boundary != total:
         raise RuntimeError(f'Edge count mismatch: {accounted}+{boundary} != {total}')
 
-    return concave_tokens, convex_tokens, tangent_tokens
+    # Build g2_tokens: subset of tangent_tokens where faces are G2-continuous (co-surface)
+    edge_by_tok = {e.entityToken: e for e in all_edges}
+    g2_tokens   = set()
+    for tok in tangent_tokens:
+        edge  = edge_by_tok.get(tok)
+        if edge is None:
+            continue
+        faces = edge_faces.get(tok, list(edge.faces))
+        if len(faces) < 2:
+            continue
+        if _is_g2_edge(edge, faces[0], faces[1], tangent_tol_cos):
+            g2_tokens.add(tok)
+
+    return concave_tokens, convex_tokens, tangent_tokens, g2_tokens
 
 
 def get_adj_face(edge, ref_face):
@@ -206,39 +292,39 @@ def is_extrusion_cylinder(adj_face, edge):
         return math.degrees(math.acos(dot)) > 80.0
     return False
 
-def flood_fill(seed_face, mode, tangent_tol_cos):
+def flood_fill(seed_face, mode, tangent_tol_cos, lineage=None):
     """
     BFS flood fill across BRep faces using pre-classified edge sets.
+    lineage: optional dict {face_token: (parent_token, rule, depth)} for debug tree output.
     Concave mode rules (applied from every queued face):
-      1. Tangent edge + adjacent face is concave curved
-      2. Concave edge (any adjacent face type)
-      3. From a concave curved face: tangent edge into flat face
-         (included but not propagated) or into extrusion-type convex curved face
+      1. G2 co-surface edge
+      2. Tangent edge + adjacent face is concave curved
+      3. Concave sharp edge
+      4. From a concave curved face: tangent edge into flat or extrusion-type convex curved face
     Convex mode: mirror of Concave.
     Tangent mode: cross any tangent edge.
     """
     body      = seed_face.body
     body_tok  = body.entityToken
     cache_key = (body_tok, tangent_tol_cos)
-    if _shared.get('_edge_cache_key') != cache_key:
-        concave_tokens, convex_tokens, tangent_tokens = build_edge_sets(body, tangent_tol_cos)
-        _shared['_edge_cache']     = (concave_tokens, convex_tokens, tangent_tokens)
-        _shared['_edge_cache_key'] = cache_key
-        _shared['_edge_cache_log'] = (f"Edge sets: {len(concave_tokens)} concave, "
-                                      f"{len(convex_tokens)} convex, "
-                                      f"{len(tangent_tokens)} tangent = {body.edges.count} total")
-    else:
-        concave_tokens, convex_tokens, tangent_tokens = _shared['_edge_cache']
+    # Per-body cache persists for entire script run; keyed by (body_token, tol)
+    edge_cache = _shared.setdefault('_edge_cache', {})
+    if cache_key not in edge_cache:
+        concave_tokens, convex_tokens, tangent_tokens, g2_tokens = build_edge_sets(body, tangent_tol_cos)
+        edge_cache[cache_key] = (concave_tokens, convex_tokens, tangent_tokens, g2_tokens)
+        _dbg(f"Edge sets [{body_tok[:8]}]: {len(concave_tokens)} concave, "
+             f"{len(convex_tokens)} convex, {len(tangent_tokens)} tangent, "
+             f"{len(g2_tokens)} g2 = {body.edges.count} total")
+    concave_tokens, convex_tokens, tangent_tokens, g2_tokens = edge_cache[cache_key]
 
     visited_tokens = {seed_face.entityToken}
     visited_faces  = [seed_face]
-    queue          = [seed_face]
-    no_propagate   = set()  # faces added but not queued for further traversal
+    queue          = [(seed_face, 0)]  # (face, depth)
+    if lineage is not None:
+        lineage[seed_face.entityToken] = (None, 'seed', 0)
 
     while queue:
-        face = queue.pop()
-        if face.entityToken in no_propagate:
-            continue
+        face, depth = queue.pop(0)  # FIFO for tree order
 
         for edge in face.edges:
             tok      = edge.entityToken
@@ -252,41 +338,56 @@ def flood_fill(seed_face, mode, tangent_tol_cos):
             adj_curved       = is_curved_face(adj_face)
             adj_concavity    = is_face_concave(adj_face) if adj_curved else None
 
-            match     = False
-            propagate = True
+            match = False
+
+            face_concavity = is_face_concave(face) if is_curved_face(face) else None
+            is_g2          = tok in g2_tokens
+            rule           = ''
 
             if mode == 'tangent':
+                rule = 'R1-edge-tangent'
                 match = is_tangent
 
             elif mode == 'concave':
-                if is_tangent and adj_concavity == True:
+                if is_g2:
+                    rule = 'R1-G2-cosurface'
+                    match = True
+                elif is_tangent and adj_concavity == True:
+                    rule = 'R2-edge-tangent-adj-face-concave'
                     match = True
                 elif is_sharp_concave:
+                    rule = 'R3-edge-concave'
                     match = True
-                elif is_curved_face(face) and is_face_concave(face) == True and is_tangent:
+                elif is_tangent and face_concavity == True:
+                    rule = 'R4-from-concave-face'
                     if adj_concavity is None:
-                        match = True; propagate = False
+                        match = True
                     elif adj_concavity == False:
                         match = is_extrusion_cylinder(adj_face, edge)
 
             elif mode == 'convex':
-                if is_tangent and adj_concavity == False:
+                if is_g2:
+                    rule = 'R1-G2-cosurface'
+                    match = True
+                elif is_tangent and adj_concavity == False:
+                    rule = 'R2-edge-tangent-adj-face-convex'
                     match = True
                 elif is_sharp_convex:
+                    rule = 'R3-edge-convex'
                     match = True
-                elif is_curved_face(face) and is_face_concave(face) == False and is_tangent:
+                elif is_tangent and face_concavity == False:
+                    rule = 'R4-from-convex-face'
                     if adj_concavity is None:
-                        match = True; propagate = False
+                        match = True
                     elif adj_concavity == True:
                         match = is_extrusion_cylinder(adj_face, edge)
 
             if match:
                 visited_tokens.add(adj_face.entityToken)
                 visited_faces.append(adj_face)
-                if propagate:
-                    queue.append(adj_face)
-                else:
-                    no_propagate.add(adj_face.entityToken)
+                queue.append((adj_face, depth + 1))
+                if lineage is not None:
+                    lineage[adj_face.entityToken] = (face.entityToken, rule, depth + 1)
 
     return visited_faces
 
@@ -319,6 +420,30 @@ def _face_desc(face):
     return f'{name}[{idx}]({conc_s})'
 
 
+def _build_face_index_graphics(body):
+    """Draw face index numbers at pointOnFace for each face in body.
+    Called once per body per run when debug is enabled.
+    """
+    design = af.Design.cast(_app.activeProduct)
+    root   = design.rootComponent
+    # Clear any existing debug graphics group for this body
+    grp_name = f'face_idx_{body.entityToken[:8]}'
+    grps = root.customGraphicsGroups
+    for gi in range(grps.count - 1, -1, -1):
+        grps.item(gi).deleteMe()
+    grp = grps.add()
+    bb = af.CustomGraphicsBillBoard.create(ac.Point3D.create(0,0,0))
+    bb.billBoardStyle = af.CustomGraphicsBillBoardStyles.ScreenBillBoardStyle
+    for idx, face in enumerate(body.faces):
+        pt = face.pointOnFace
+        m  = ac.Matrix3D.create()
+        m.translation = ac.Vector3D.create(pt.x, pt.y, pt.z)
+        txt = grp.addText(f'.{idx}', 'Arial', 0.3, m)
+        txt.billBoarding = bb
+    _app.activeViewport.refresh()
+    return grp
+
+
 # ---------- command handlers ----------
 
 class CommandExecuteHandler(ac.CommandEventHandler):
@@ -328,6 +453,16 @@ class CommandExecuteHandler(ac.CommandEventHandler):
 class CommandDestroyHandler(ac.CommandEventHandler):
     def __init__(self): super().__init__()
     def notify(self, args):
+        try:
+            # Clear face index debug graphics
+            design = af.Design.cast(_app.activeProduct)
+            if design:
+                grps = design.rootComponent.customGraphicsGroups
+                for gi in range(grps.count - 1, -1, -1):
+                    grps.item(gi).deleteMe()
+                _app.activeViewport.refresh()
+        except:
+            pass
         try:
             if args.terminationReason == ac.CommandTerminationReason.CompletedTerminationReason:
                 faces = _shared.get('faces', [])
@@ -363,8 +498,17 @@ class PreSelectHandler(ac.SelectionEventHandler):
             if not face: return
             mode  = _shared.get('mode', 'concave')
             tol   = _shared.get('tol', math.cos(math.radians(0.1)))
-            faces = flood_fill(face, mode, tol)
-            _shared['faces'] = faces
+            lineage = {} if _shared.get('debug') else None
+            # Build face index graphics once per body when debug is on
+            if _shared.get('debug'):
+                body_tok = face.body.entityToken
+                gfx_cache = _shared.setdefault('_gfx_cache', set())
+                if body_tok not in gfx_cache:
+                    _build_face_index_graphics(face.body)
+                    gfx_cache.add(body_tok)
+            faces = flood_fill(face, mode, tol, lineage)
+            _shared['faces']   = faces
+            _shared['lineage'] = lineage
             col = ac.ObjectCollection.create()
             for f in faces:
                 if f.entityToken != face.entityToken:
@@ -390,15 +534,36 @@ class SelectHandler(ac.SelectionEventHandler):
                 _shared['locked'] = True
                 _shared['inputs'].itemById('lbl').text = ''
                 if _shared.get("debug"):
+                    lineage = _shared.get('lineage', {})
                     faces = _shared.get('faces', [])
                     mode  = _shared.get('mode', '')
                     seed  = faces[0] if faces else af.BRepFace.cast(args.selection.entity)
                     _app.log('---')
-                    if '_edge_cache_log' in _shared:
-                        _app.log(_shared['_edge_cache_log'])
                     _app.log(f'Mode: {mode}  Seed: {_face_desc(seed)}  Found: {len(faces)} faces')
-                    for fi, ff in enumerate(faces):
-                        _app.log(f'  {fi+1}. {_face_desc(ff)}')
+                    body_faces = list(seed.body.faces)
+                    def face_idx(f):
+                        try: return next(i for i,bf in enumerate(body_faces) if bf.entityToken == f.entityToken)
+                        except StopIteration: return -1
+                    def short_desc(f):
+                        st   = _SURF_NAMES.get(f.geometry.surfaceType, str(f.geometry.surfaceType))
+                        curv = is_curved_face(f)
+                        conc = is_face_concave(f) if curv else None
+                        cs   = 'concave' if conc == True else 'convex' if conc == False else 'flat'
+                        return f'{st}({cs})'
+                    from collections import defaultdict
+                    children = defaultdict(list)
+                    for f in faces:
+                        parent_tok, rule, _ = lineage.get(f.entityToken, (None, "?", 0))
+                        children[parent_tok].append((f, rule))
+                    seed_idx = face_idx(seed)
+                    _app.log(f"[{seed_idx}] {short_desc(seed)} [seed]")
+                    def print_tree(f, ind):
+                        pidx = face_idx(f)
+                        for child, rule in children.get(f.entityToken, []):
+                            cidx = face_idx(child)
+                            _app.log(f"{ind}[{pidx}]->[{cidx}] {short_desc(child)} [{rule}]")
+                            print_tree(child, ind + "        ")
+                    print_tree(seed, "        ")
         except:
             _ui.messageBox(traceback.format_exc())
 
@@ -412,7 +577,7 @@ class InputChangedHandler(ac.InputChangedEventHandler):
             if changed_id in ('mode', 'tol'):
                 _shared['mode'] = mode_map[inputs.itemById('mode').selectedItem.name]
                 _shared['tol']  = math.cos(inputs.itemById('tol').value)
-                _shared.pop('_edge_cache_key', None)  # invalidate cache on tol change
+                _shared.pop('_edge_cache', None)  # invalidate all body caches on tol change
             if changed_id == 'debug':
                 _shared['debug'] = inputs.itemById('debug').value
             if changed_id in ('mode', 'tol', 'seed'):
